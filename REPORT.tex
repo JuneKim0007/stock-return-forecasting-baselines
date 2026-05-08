@@ -1,0 +1,291 @@
+\documentclass[10pt,a4paper,twocolumn]{article}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{siunitx}
+\usepackage[margin=2cm]{geometry}
+% microtype disabled while iterating on the .tex on Overleaf — its level-2
+% expansion (step=1) reliably blows the free-tier 60s compile budget.
+% Re-enable for the final compile pass when polishing typography.
+% \usepackage{microtype}
+\usepackage{csquotes}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{titlesec}
+
+\setlength{\columnsep}{0.7cm}
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=teal, urlcolor=blue}
+
+% Operators
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator{\Var}{Var}
+\DeclareMathOperator{\Cov}{Cov}
+\DeclareMathOperator{\Corr}{Corr}
+\DeclareMathOperator{\E}{\mathbb{E}}
+\DeclareMathOperator{\KL}{KL}
+\DeclareMathOperator{\RMSE}{RMSE}
+\DeclareMathOperator{\MAE}{MAE}
+\DeclareMathOperator{\MSE}{MSE}
+\DeclareMathOperator{\AIC}{AIC}
+\DeclareMathOperator{\BIC}{BIC}
+
+\titleformat{\section}{\normalfont\large\bfseries}{\thesection}{0.6em}{\MakeUppercase}
+\titleformat{\subsection}{\normalfont\normalsize\bfseries}{\thesubsection}{0.5em}{}
+
+\lstset{
+  basicstyle=\ttfamily\scriptsize,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  frame=single,
+  framesep=3pt,
+  xleftmargin=4pt,
+  xrightmargin=4pt
+}
+
+\title{\textbf{Forecasting Consumer-Sector Stock Returns:\\
+Simple Baselines vs.\ AIC-Selected ARMA Across Price Tiers}}
+\author{jk7296@nyu.edu}
+\date{2026-05-07}
+
+\begin{document}
+
+\twocolumn[
+  \begin{@twocolumnfalse}
+    \maketitle
+    \medskip
+  \end{@twocolumnfalse}
+]
+
+\section{Introduction}
+\label{sec:intro}
+
+\subsection{Background}
+ARMA models are widely used in time series analysis because they capture how current values depend on recent past observations. However, when applied to financial markets, their effectiveness is limited as returns tend to exhibit weak autocorrelation and are heavily influenced by noise and market shifts. 
+
+The objective of this study is to assess four linear structured forecasters: Naive, Expanding Mean, Moving Average, and ARMA, and their effectiveness in producing one-step-ahead predictions $\hat r_t$ of daily log returns. Each forecaster reads its own past-return slice and outputs a single prediction; predictive accuracy is then evaluated using MSE and RMSE. A simple model average is included as a comparison point. A non-causal \emph{global mean} (using the entire sample including the test set) is also reported as a benchmark to bound how well any constant predictor could possibly do.
+
+\subsection{Primary inputs: log returns}
+\label{sec:logret}
+I use daily log returns $r_t = \log P_t - \log P_{t-1}$ The reason is additivity: log returns sum across days, so
+\begin{equation}
+r_{t \to t+k} = \sum_{i=1}^{k} r_{t+i}
+\label{eq:additivity}
+\end{equation}
+holds without approximation for any $k$. 
+Log returns are also scale-free, which makes comparisons across stocks with different price levels more meaningful.
+
+\section{Data}
+\label{sec:data}
+
+\subsection{Stock tier classification}
+\label{sec:tier-classification}
+
+Stocks are partitioned into three price-based tiers using mean adjusted price over the sample. Each tier contains $30$ tickers.
+
+\begin{itemize}\itemsep0pt
+  \item \textbf{Small-price:} mean below \$30.
+
+  \item \textbf{Medium-price:} mean in $[\$30, \$100]$.
+
+  \item \textbf{Large-price:} mean above \$100.
+\end{itemize}
+A stock is assigned to a tier purely by its mean adjusted price over the sample window; no separate outlier-threshold check is applied.
+
+\subsection{Data source and sample period}
+
+Daily adjusted closing prices were collected using \texttt{yfinance} for stocks selected from the Russell 3000 universe. The data begins $2022$-$08$-$15$ so that the longest-window models (MA($90$) and ARMA($90$)) already have $90$ trading days of past prices on the first test day.
+
+The scored test period runs from $2023$-$01$-$01$ to $2023$-$12$-$31$, corresponding to roughly $252$ trading days per ticker.
+
+\subsection{Adjusted close}
+
+I use adjusted closing prices (\texttt{Adj Close}) obtained through \texttt{yfinance}. Adjusted prices account for corporate actions such as stock splits. Without these adjustments, raw closing prices may contain artificial jumps.
+
+\subsection{Trading-day index}
+
+Since stock markets are closed on weekends and holidays, the data contains gaps on non-trading days. Returns were computed by directly connecting consecutive trading days.
+
+\section{Models}
+\label{sec:models}
+
+I compared four different forecaster models of linear structure plus an unweighted model average.
+
+\subsection{Naive}
+\begin{equation}
+\hat r_t = r_{t-1}.
+\label{eq:naive}
+\end{equation}
+Predict today's return as yesterday's. The simplest possible reuse of past information.
+
+\subsection{Global mean}
+\begin{equation}
+\hat r_t = \frac{1}{T}\sum_{i = 1}^{T} r_i.
+\label{eq:trainmean}
+\end{equation}
+Equal-weighted mean over the \emph{entire} sample, including the test set. The forecast is the same constant for every test day. This forecaster intentionally peeks at future returns and is therefore \emph{not} a causual predictor; However, it is still included to analyze persistent behavior of the stock in the test time period.
+
+\subsection{Expanding mean}
+\begin{equation}
+\hat r_t = \frac{1}{k}\sum_{i = t_{\text{start}}}^{t-1} r_i,\qquad k = t - t_{\text{start}}.
+\label{eq:expanding}
+\end{equation}
+Equal-weighted mean over every observation seen so far. Every past return contributes with equal weight and the denominator $k$ grows with $t$.
+
+\subsection{Moving average MA(\texorpdfstring{$s$}{s})}
+\begin{equation}
+\hat r_t = \frac{1}{s}\sum_{i=1}^{s} r_{t-i},\qquad s \in \{30, 60, 90\}.
+\label{eq:ma}
+\end{equation}
+Same form as the mean but on a shorter window. Short windows help when the conditional mean drifts and hurt when it doesn't.
+
+\subsection{ARMA(\texorpdfstring{$p,q$}{p,q})}
+\begin{equation}
+r_t = c + \sum_{i=1}^{p} \phi_i\,r_{t-i} + \sum_{j=1}^{q} \theta_j\,\varepsilon_{t-j} + \varepsilon_t,
+\label{eq:arma-state}
+\end{equation}
+with white Gaussian noise with $\sigma_\varepsilon^2$. ARMA is fit at two windows, $W \in \{60, 90\}$, producing two model variants \texttt{arma60} and \texttt{arma90}.
+
+\subsubsection*{Order selection (AIC)}
+
+The ARMA order $(p,q)$ was selected from the grid $\{0,\ldots,4\}^2$ by choosing the pair such that $\AIC(p,q)$ is minimized.
+\subsection{Model Average}
+
+\begin{equation}
+\hat r_t^{\text{ens}} = \frac{1}{N}\sum_{i=1}^{N} \hat r_t^{(i)},
+\qquad N = 7,
+\label{eq:ens}
+\end{equation}
+
+where the ensemble forecast is the unweighted average of six causal models: Expanding Mean, MA(30), MA(60), MA(90), ARMA(60), and ARMA(90).
+
+The global mean forecast is excluded because it uses information from the full dataset, including future observations. 
+The naive forecast is also excluded, as its high variance can destabilize the ensemble prediction.
+
+\section{Forecasting protocol}
+\label{sec:rolling}
+
+Every model is evaluated on the same fixed test period: $2023$-$01$-$01$ to $2023$-$12$-$31$, roughly $252$ trading days per ticker. Each model is scored on the same dates.
+
+How a model produces $\hat r_t$ depends on the model:
+\begin{itemize}\itemsep0pt
+  \item \textbf{Naive} reads only $r_{t-1}$.
+  \item \textbf{Expanding mean} reads every return up to $t-1$, weighted equally.
+  \item \textbf{MA($s$) and ARMA} slide a fixed-length window over the past $s$ returns and refit at every step. This is the only place a rolling window actually moves.
+  \item \textbf{Global mean} averages every return in the entire sample, including the test set.
+\end{itemize}
+For models that need a window of $W$ past returns, I downloaded an extra $\geq 90$ trading days before the test period (starting $2022$-$08$-$15$) so even MA($90$) and ARMA($90$) have a full window on test-day $1$. Predictions on these pre-test days are not scored. 
+\textbf{All models except the global average use only past observations available at prediction time to produce forecasts.}
+\section{Analysis}
+\label{sec:analysis}
+
+For each (ticker, model) pair we compute MSE, RMSE, and MAE over the 252 test-day forecast errors $e_t = r_t - \hat r_t$:
+\begin{align}
+\MSE  &= \tfrac{1}{n}\sum_{t} e_t^2,             \label{eq:mse}\\
+\RMSE &= \sqrt{\MSE},                            \label{eq:rmse}\\
+\MAE  &= \tfrac{1}{n}\sum_{t} |e_t|.             \label{eq:mae}
+\end{align}
+RMSE penalises large errors more; we report both so models that disagree only at the tails are not misranked.
+
+The remainder of this section reports three views on the per-(ticker, model) RMSE / MAE table: a per-tier summary, an overall summary flattened across tiers, and a score histogram of how often each model wins.
+
+\subsection{Per-tier analysis}
+\label{sec:per-tier}
+
+For each tier the cumulative squared error $S_t(m) = \sum_{s \le t} e_s^{(m)\,2}$ is pooled across the tier's $30$ tickers, with one line per model. The companion summary table tabulates the per-model mean, variance, minimum, and maximum of RMSE and MAE across the tier's tickers; the matching bar chart shows the mean with whiskers from the per-tier minimum to maximum so the spread of model performance across stocks is visible at a glance.
+
+Observed in every tier: \texttt{global} sits at the bottom of the cluster, the four central-tendency causal models (\texttt{expanding}, \texttt{ma30}, \texttt{ma60}, \texttt{ma90}) sit next to it within a few thousandths, the two ARMAs sit a little above, and \texttt{naive} is well separated above the pack. The tier mean RMSE itself drops with price: tier 1 small caps are the noisiest, tier 3 large caps the calmest.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{./summary_tier1.png}
+\caption{Tier 1 per-model summary across $30$ small-price tickers. Whiskers span minimum and maximum.}
+\label{fig:sum-tier1}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{./summary_tier3.png}
+\caption{Tier 3 per-model summary across $30$ large-price tickers; the same model order, much smaller absolute errors.}
+\label{fig:sum-tier3}
+\end{figure}
+
+\subsection{Overall analysis}
+\label{sec:overall}
+
+Flattening across the three tiers ($90$ tickers in total), the cumulative-error plot pools squared errors across every ticker and the bar chart averages RMSE and MAE across every ticker.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{./cumulative_overall.png}
+\caption{Cumulative squared error pooled across all $90$ tickers; \texttt{naive} separates from the tight central-tendency cluster within the first few weeks.}
+\label{fig:cum-overall}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{./summary_overall.png}
+\caption{Overall per-model summary across all $90$ tickers (mean RMSE and MAE with minimum-to-maximum whiskers).}
+\label{fig:sum-overall}
+\end{figure}
+
+\subsection{Score histogram}
+\label{sec:score}
+
+For each ticker we identify the model with the lowest RMSE on that ticker and award it $+1$ win. Summing across all $90$ tickers gives a per-model win count. Three models are excluded:
+\begin{itemize}\itemsep0pt
+  \item \texttt{naive} almost never wins;
+  \item \texttt{ensemble} is a derived model averaging the others;
+  \item \texttt{global} is the future-leaking benchmark and would win every ticker by construction.
+\end{itemize}
+On the empirical run, \texttt{expanding} wins $81$ of $90$ tickers, \texttt{ma60} $8$, \texttt{ma90} $1$; \texttt{ma30}, \texttt{arma60}, and \texttt{arma90} win zero. The expanding-window mean is the single best causal forecaster on this slice, just barely separated from the longer-window MAs.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{./score_histogram.png}
+\caption{Score histogram across all $90$ tickers (\texttt{naive}, \texttt{ensemble}, \texttt{global} excluded). \texttt{expanding} wins $81 / 90$.}
+\label{fig:score-hist}
+\end{figure}
+
+\section{Result and Conclusion}
+\label{sec:results}
+\label{sec:discussion}
+\label{sec:conclusion}
+
+\subsection{Headline numbers}
+Pooled across all $90$ tickers, the mean RMSE per model is:
+\begin{itemize}\itemsep0pt
+  \item \texttt{global}    $\approx 0.0237$ (lowest, by construction)
+  \item \texttt{expanding} $\approx 0.0238$
+  \item \texttt{ma90} / \texttt{ma60} / \texttt{ensemble} $\approx 0.0239$
+  \item \texttt{ma30}      $\approx 0.0241$
+  \item \texttt{arma90} / \texttt{arma60} $\approx 0.0243$ -- $0.0245$
+  \item \texttt{naive}     $\approx 0.0335$ (highest)
+\end{itemize}
+The empirical \texttt{naive} / central-tendency RMSE ratio is $0.0335 / 0.0237 = 1.414$, matching the theoretical $\sqrt{2}$ to four significant figures.
+
+\subsection{Why the central-tendency baselines win}
+Under near-zero conditional autocorrelation, $\E[r_t \mid \mathcal{F}_{t-1}] \approx 0$. The MLE of the unconditional mean on a length-$L$ iid Gaussian slice is the sample mean, with prediction MSE $\sigma^2(1 + 1/L)$. For $L \ge 30$ that is essentially the noise floor $\sigma^2$, so all four central-tendency variants land at the same RMSE up to small finite-sample noise. \texttt{global} edges them out only because it uses the full-sample mean (including future test data) and therefore has no estimation noise -- the cheating advantage is small precisely because the iid fluctuation is already small.
+
+\subsection{Why naive does not}
+With $\hat r_t = r_{t-1}$, the prediction error variance is $2\sigma^2$ under iid, giving an RMSE of $\sqrt{2}\sigma$. The empirical ratio above confirms this exactly.
+
+\subsection{Why ARMA does not}
+ARMA tries to fit autoregressive structure that is not present in returns. AIC selects a small order on noisy data, and the fitted coefficients add estimation noise that more than offsets any small autocorrelation captured. Both \texttt{arma60} and \texttt{arma90} sit slightly above the central-tendency cluster.
+
+\subsection{Why the ensemble does not}
+With six highly correlated children, the diversification benefit predicted by $\Var(e_t^{\text{ens}}) \approx \bar\sigma^2 (1 + (N-1)\bar\rho)/N$ collapses as $\bar\rho \to 1$. The ensemble lands inside the cluster but cannot beat the best individual mean estimator.
+
+\subsection{Why each tier's RMSE differs}
+The per-tier mean RMSE drops monotonically with price band: tier 1 (small) $\approx 0.034$, tier 2 (medium) $\approx 0.022$, tier 3 (large) $\approx 0.017$. This reflects volatility, not price level: log returns are dimensionless, but small caps have wider return distributions than large caps, so every model has more error to make on tier 1.
+
+\subsection{Conclusion}
+On daily log returns of $90$ stocks across three price tiers (Russell 3000, $30$ tickers each in small / medium / large bands), the central-tendency baselines dominate. Constant-mean and equal-weight rolling-mean forecasts are essentially indistinguishable from each other and clearly better than \texttt{naive}, ARMA, or a flat ensemble of the lot. The empirical Naive/baseline ratio matches the theoretical $\sqrt{2}$, and ARMA does not pay for its complexity on this slice of the equity universe.
+
+\end{document}
