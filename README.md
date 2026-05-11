@@ -1,6 +1,6 @@
 # Forecasting Stock Returns: Simple Baselines vs. ARMA
 
-A small reproducible measurement pipeline that benchmarks classical time-series
+A reproducible measurement pipeline that benchmarks classical time-series
 forecasters on **daily log returns** of US equities, sliced into three
 price-based tiers.
 
