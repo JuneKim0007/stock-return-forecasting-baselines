@@ -1,144 +1,253 @@
-# Forecasting Stock Returns: Simple Baselines vs. ARMA
+# Forecasting Stock Returns: Simple Baselines vs. AIC-Selected ARMA
 
-A reproducible measurement pipeline that benchmarks classical time-series
-forecasters on **daily log returns** of US equities, sliced into three
-price-based tiers.
+**Solo project — JoonHak Kim (NYUAD)**
 
-## What it does
+![](./assets/img/summary_overall.png)
 
-For each ticker, every model produces a one-step-ahead forecast for every
-trading day in the test period (`2023-01-01 → 2023-12-31`). The pipeline
-scores RMSE / MAE per `(ticker, model)`, summarises per-tier and across
-tiers, and renders the figures used in `REPORT.tex`.
+<br>
+<br>
 
-## Models
+## 1. Project Introduction
 
-| name        | what it predicts at step `t`                              |
-|-------------|-----------------------------------------------------------|
-| `naive`     | yesterday: `y[t-1]`                                       |
-| `global`    | mean of the entire sample (test set included). **Future-leaking benchmark only.** |
-| `expanding` | mean of every observation seen so far                     |
-| `ma30`      | mean of the past 30 returns                               |
-| `ma60`      | mean of the past 60 returns                               |
-| `ma90`      | mean of the past 90 returns                               |
-| `arma60`    | ARMA(p,q) AIC-fit on the past 60 returns                  |
-| `arma90`    | ARMA(p,q) AIC-fit on the past 90 returns                  |
-| `ensemble`  | per-step mean of `expanding`, `ma30`, `ma60`, `ma90`, `arma60`, `arma90` (excludes `naive` and `global`) |
+### 1-1. Project Overview
 
-ARMA grid: `p, q ∈ {0..2}`, AIC re-search every 40 steps with cached order in
-between.
+ARMA models are a textbook tool for short-horizon time-series forecasting. On
+real equity data, though, daily returns sit right at the edge of what any
+linear model can extract — autocorrelation is weak, noise dominates, and the
+conditional mean is close to zero.
 
-## Tiers (Russell 3000 universe)
+This project benchmarks **eight one-step-ahead forecasters** on the
+**daily log returns** of 90 US equities drawn from the Russell 3000, split
+into three **price-based tiers** (small / medium / large). Every model
+predicts the same 252 trading days of 2023, and we score each
+`(ticker, model)` pair with RMSE and MAE.
 
-A stock is assigned to a tier purely by its mean adjusted price over the
-sample window — no outlier filter:
+The point isn't to find a magic forecaster — it's to measure exactly **how
+much, or how little, structure each model can squeeze out** of daily
+returns, and to verify the textbook result that a sample mean beats both
+a naive predictor and a fitted ARMA on noise-dominated series.
 
-| tier   | label  | mean band       |
-|--------|--------|-----------------|
-| tier1  | small  | `< $30`         |
-| tier2  | medium | `[$30, $100]`   |
-| tier3  | large  | `> $100`        |
+<br>
 
-The pipeline stochastically samples 30 tickers per tier from
-`data/universe/russell3000.txt` (configurable via `--target` / `--seed`).
+### 📁 1-2. Related Materials
 
-## Forecasting protocol
+* Full write-up (LaTeX) : [REPORT.tex](./REPORT.tex)
+* Models implementation : [src/models.py](./src/models.py)
+* Pipeline entry point  : [src/runner.py](./src/runner.py)
 
-- Test period (scored): `2023-01-01 → 2023-12-31`, ≈ 252 trading days.
-- Burn-in: data downloaded from `2022-08-15` so even the 90-day-lookback
-  models have a full window on test-day 1.
-- Each model uses only its own past returns (half-open slice `y[t-L:t]`).
-  `global` is the deliberate exception — included as a benchmark.
+<br>
+<br>
 
-## Run
+## 2. Preparation
+
+### 2-1. Dataset
+
+Daily adjusted closing prices were pulled directly from **Yahoo Finance**
+via the `yfinance` Python package. The ticker universe comes from the
+Russell 3000.
+
+* Russell 3000 ticker list  
+  shipped in repo at [`data/universe/russell3000.txt`](./data/universe/russell3000.txt)
+
+* Daily adjusted closes (`Adj Close`)  
+  fetched at runtime via `yfinance.download(...)` — adjusts for splits and
+  other corporate actions so the return series is artefact-free.
+
+* Sample window  
+  `2022-08-15 → 2023-12-31`. The scored test period is `2023-01-01 →
+  2023-12-31` (~252 trading days). The extra ~90 trading days of burn-in
+  let the longest-window models (MA(90), ARMA(90)) start on test-day 1
+  with a full lookback already in hand.
+
+* Tier assignment (purely by mean adjusted price over the window):
+
+  | tier   | label   | mean price band |
+  |--------|---------|-----------------|
+  | tier 1 | small   | `< $30`         |
+  | tier 2 | medium  | `[$30, $100]`   |
+  | tier 3 | large   | `> $100`        |
+
+  The pipeline randomly samples **30 tickers per tier** (90 total) from the
+  Russell 3000 universe — reproducible via the `--seed` flag.
+
+<br>
+
+### 2-2. Other Tools
+
+* `statsmodels` — ARMA fitting with AIC order selection on the grid
+  `p, q ∈ {0..4}`.
+* `numpy` / `pandas` — return computation and rolling windows.
+* `matplotlib` — every figure in section 4.
+* `SQLite` — local price cache at `ticker_data/cache.db`; runs after the
+  first one don't re-hit Yahoo.
+
+<br>
+<br>
+
+## 3. Code
+
+[Data loading](./src/data.py) — cache-aware `load_returns` on top of
+`yfinance`.
+
+[Models](./src/models.py) — `Naive`, `GlobalMean`, `ExpandingMean`,
+`MovingAverage(s)`, `ARMA(W)`, and the unweighted ensemble.
+
+[Rolling driver](./src/rolling.py) — per-model lookback window walker.
+
+[Evaluation](./src/evaluate.py) — one-ticker-at-a-time RMSE / MAE.
+
+[Pipeline runner](./src/runner.py) — CLI entry, tier sampling, parallel
+ticker evaluation.
+
+[Summaries & plots](./src/summary.py), [plotting registry](./src/plots.py).
+
+To reproduce the full benchmark end-to-end:
 
 ```bash
-python -m pytest tests/ -x --tb=short            # 39 tests, ~45s
-python -m src.runner --seed 42 --force           # full run, ~25 min
+pip install -r requirements.txt
+python -m pytest tests/ -x --tb=short   # 39 tests, ~45s
+python -m src.runner --seed 42 --force  # full run, ~25 min
 ```
 
-CLI flags:
+<br>
+<br>
 
-| flag                | meaning                                           |
-|---------------------|---------------------------------------------------|
-| `--target N`        | per-tier target (default 30)                      |
-| `--seed S`          | reproducible ticker sampling                      |
-| `--refresh-cache`   | bypass the SQLite price cache                     |
-| `--tiers tier1,…`   | restrict to a subset of tiers                     |
-| `--force`           | bypass the 1-hour ARMA budget gate                |
+## 4. Visualizations
 
-## Outputs
+### 4-1. Per-tier Results
 
-```
-results/test_runs/test_<UTC_TIMESTAMP>/
-├── tier1/                  # 30 tickers, mean < $30
-│   ├── individual/         # per-ticker per-pair figures
-│   ├── grouped/            # cumulative_tier1.png, summary_tier1.{png,csv}
-│   ├── predictions/        # raw <TICKER>_<MODEL>.csv
-│   ├── analysis/           # per-stock dotplots
-│   └── tier1_tickers.txt   # ticker list
-├── tier2/                  # 30 tickers, $30 ≤ mean ≤ $100
-├── tier3/                  # 30 tickers, mean > $100
-├── analysis/
-│   ├── cumulative_overall.png
-│   ├── summary_overall.{png,csv}
-│   ├── score_histogram.{png,csv}
-│   └── all_tiers_dotplot_*.png
-├── metrics.csv             # tier, ticker, model, rmse, mae, n
-├── ticker_tested.csv       # combined tier + ticker
-└── manifest.json           # config snapshot, seed, runtime
-```
+For each price tier, the cumulative squared error is pooled across the
+tier's 30 tickers (one line per model), and a companion bar chart shows
+the per-model mean RMSE / MAE with whiskers spanning the tier
+minimum-to-maximum.
 
-The SQLite price cache lives at `ticker_data/cache.db`; reuse across runs is
-automatic.
+**Tier 1 (small cap, mean price < $30) — per-model RMSE / MAE summary**
+![](./assets/img/summary_tier1.png)
 
-## Headline result
+**Tier 2 (mid cap, $30 ≤ mean ≤ $100) — per-model RMSE / MAE summary**
+![](./assets/img/summary_tier2.png)
 
-Pooled across all 90 tickers (30 per tier):
+**Tier 3 (large cap, mean > $100) — per-model RMSE / MAE summary**
+![](./assets/img/summary_tier3.png)
 
-| model       | mean RMSE | win count |
-|-------------|-----------|-----------|
-| `global`    | 0.0237    | (excluded — benchmark) |
-| `expanding` | 0.0238    | **81 / 90** |
-| `ma90`      | 0.0239    | 1 |
-| `ma60`      | 0.0239    | 8 |
-| `ensemble`  | 0.0239    | (excluded — meta) |
-| `ma30`      | 0.0241    | 0 |
-| `arma90`    | 0.0243    | 0 |
-| `arma60`    | 0.0245    | 0 |
-| `naive`     | 0.0335    | (excluded — trivial) |
+The same model ordering shows up in every tier: `global` sits at the
+bottom of the cluster, the four central-tendency causal models
+(`expanding`, `ma30`, `ma60`, `ma90`) sit next to it within a few
+thousandths, the two ARMAs sit a little above, and `naive` is well
+separated above the pack. The tier mean RMSE itself drops monotonically
+with price — small caps are the noisiest, large caps the calmest.
 
-The empirical `naive / baseline` RMSE ratio = `0.0335 / 0.0237` = **1.414**,
-matching the theoretical √2 to four significant figures. The expanding mean
-is the single best causal forecaster; ARMA does not pay for its complexity.
+**Cumulative squared error within each tier**
+![](./assets/img/cumulative_tier1.png)
+![](./assets/img/cumulative_tier2.png)
+![](./assets/img/cumulative_tier3.png)
 
-## Repository layout
+<br>
 
-```
-src/
-├── config.py        # tier specs, dates, ARMA grid, lookbacks
-├── data.py          # cache-aware load_returns
-├── models.py        # Naive / Global / Expanding / MA / ARMA
-├── rolling.py       # run_eval (per-model lookback driver)
-├── evaluate.py      # run_one_ticker_eval + ARMA cost estimator
-├── runner.py        # CLI entry, orchestration, ticker selection
-├── selection.py     # per-tier sampling
-├── summary.py       # per-tier / overall summaries + score histogram
-├── plots.py         # per-pair figure registry
-├── analysis/        # per-stock dotplot module
-└── storage/db.py    # SQLite ticker price cache
+### 4-2. Overall Results
 
-tests/                # pytest suite (39 tests)
-data/universe/        # Russell 3000 ticker list
-results/test_runs/    # one directory per pipeline run
-ticker_data/cache.db  # shared SQLite price cache
-REPORT.tex            # full write-up matching this README
-```
+Flattening across the three tiers (90 tickers in total) gives the pooled
+view.
 
-## Requirements
+**Cumulative squared error across all 90 tickers**
+![](./assets/img/cumulative_overall.png)
 
-```
-yfinance, pandas, numpy, statsmodels, scipy, matplotlib, pytest
-```
+`naive` separates from the tight central-tendency cluster within the first
+few weeks and stays separated for the rest of the year.
 
-`pip install -r requirements.txt` and you're set.
+**Overall per-model RMSE / MAE summary**
+![](./assets/img/summary_overall.png)
+
+Pooled mean RMSE per model:
+
+| model      | mean RMSE  | comment                                  |
+|------------|------------|------------------------------------------|
+| `global`   | ≈ 0.0237   | lowest, by construction (peeks at test)  |
+| `expanding`| ≈ 0.0238   | **best causal forecaster**               |
+| `ma90`     | ≈ 0.0239   |                                          |
+| `ma60`     | ≈ 0.0239   |                                          |
+| `ensemble` | ≈ 0.0239   | unweighted mean of 6 causal children     |
+| `ma30`     | ≈ 0.0241   |                                          |
+| `arma90`   | ≈ 0.0243   |                                          |
+| `arma60`   | ≈ 0.0245   |                                          |
+| `naive`    | ≈ 0.0335   | highest                                  |
+
+The empirical `naive / central-tendency` RMSE ratio is `0.0335 / 0.0237 =
+1.414`, matching the theoretical √2 to four significant figures.
+
+<br>
+
+### 4-3. Model Win Counts
+
+For each ticker we take the model with the lowest RMSE and award it +1
+win. Summed across all 90 tickers — `naive`, `ensemble`, and `global`
+excluded (trivial / derived / future-leaking) — we get:
+
+![](./assets/img/score_histogram.png)
+
+`expanding` wins **81 of 90 tickers**, `ma60` wins 8, `ma90` wins 1;
+`ma30`, `arma60`, and `arma90` win zero. The expanding-window mean is the
+single best causal forecaster on this slice, just barely separated from
+the longer-window moving averages.
+
+**Best causal model vs. mean stock price**
+![](./assets/img/best_predictor_vs_price.png)
+
+The winning forecaster doesn't change systematically with price tier —
+`expanding` dominates uniformly across small, medium, and large caps.
+
+<br>
+<br>
+
+## 5. Closing
+
+### Project Conclusion
+
+On daily log returns of 90 stocks across three price tiers (Russell 3000,
+30 tickers per band), the **central-tendency baselines dominate**.
+Constant-mean and equal-weight rolling-mean forecasts are essentially
+indistinguishable from each other and clearly better than `naive`, ARMA,
+or a flat ensemble of the lot.
+
+A few takeaways:
+
+* **The √2 result holds empirically.** Under near-zero conditional
+  autocorrelation, `naive` has prediction variance `2σ²` vs. `σ²` for any
+  mean estimator — RMSE ratio `√2`, exactly what the data shows
+  (`1.414`).
+
+* **ARMA does not pay for its complexity.** AIC selects small orders on
+  noisy data, and the fitted coefficients add estimation noise that more
+  than offsets any tiny autocorrelation captured. Both `arma60` and
+  `arma90` sit slightly above the central-tendency cluster — never
+  below.
+
+* **The expanding mean beats every fixed-length MA window.** Once you've
+  accepted that the conditional mean is roughly constant and roughly
+  zero, the best estimator of that mean is the one that uses the most
+  data — i.e., expanding rather than rolling.
+
+* **Per-tier RMSE tracks volatility, not price.** Log returns are
+  dimensionless, but small caps have wider return distributions than
+  large caps, so every model has more error to make on tier 1.
+
+The bigger lesson from running this end-to-end: on noise-dominated
+financial time series, **the choice of estimator class matters far less
+than the recognition that the signal is small in the first place**. A
+correctly applied sample mean is a strong, theoretically grounded
+benchmark — and a fitted ARMA without a real autoregressive signal is
+just an expensive way to add estimation variance to your forecast.
+
+<br>
+
+### 🔨 Tech Stack
+
+- Python 3.11
+- `yfinance`, `pandas`, `numpy`
+- `statsmodels`, `scipy`
+- `matplotlib`
+- `pytest` (39-test suite)
+- SQLite (price cache)
+
+<br>
+<br>
