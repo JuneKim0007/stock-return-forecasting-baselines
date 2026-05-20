@@ -1,6 +1,6 @@
 # Forecasting Stock Returns: Simple Baselines vs. AIC-Selected ARMA
 
-**Solo project — JoonHak Kim (NYUAD)**
+**Solo project**
 
 ![](./assets/img/summary_overall.png)
 
