@@ -9,7 +9,7 @@ import pandas as pd
 
 
 _SUMMARY_COLS = (
-    "test_run", "tier", "ticker", "window", "model",
+    "test_run", "tier", "ticker", "model",
     "n_steps", "mse", "rmse", "mae",
     "sq_err_var", "sq_err_median", "sq_err_max", "sq_err_min",
     "abs_err_var", "abs_err_median", "abs_err_max", "abs_err_min",
@@ -21,14 +21,14 @@ def persist_summary(
     test_run: str,
     summaries: List[Dict[str, Any]],
 ) -> None:
-    """Idempotently INSERT OR REPLACE one row per (tier, ticker, window, model)."""
+    """Idempotently INSERT OR REPLACE one row per (tier, ticker, model)."""
     if not summaries:
         return
     rows = []
     for s in summaries:
         row = (
             test_run,
-            s["tier"], s["ticker"], int(s["window"]), s["model"],
+            s["tier"], s["ticker"], s["model"],
             int(s["n_steps"]), s["mse"], s["rmse"], s["mae"],
             s.get("sq_err_var"), s.get("sq_err_median"),
             s.get("sq_err_max"), s.get("sq_err_min"),
@@ -50,7 +50,6 @@ def persist_per_step(
     test_run: str,
     tier: str,
     ticker: str,
-    window: int,
     model: str,
     per_step: pd.DataFrame,
 ) -> None:
@@ -59,11 +58,11 @@ def persist_per_step(
         return
     sql = (
         "INSERT OR REPLACE INTO analysis_per_step "
-        "(test_run, tier, ticker, window, model, step_idx, sq_err, abs_err) "
-        "VALUES (?,?,?,?,?,?,?,?)"
+        "(test_run, tier, ticker, model, step_idx, sq_err, abs_err) "
+        "VALUES (?,?,?,?,?,?,?)"
     )
     rows_iter = (
-        (test_run, tier, ticker, int(window), model,
+        (test_run, tier, ticker, model,
          int(r.step_idx), float(r.sq_err), float(r.abs_err))
         for r in per_step.itertuples(index=False)
     )

@@ -1,8 +1,7 @@
 """Phase 5 — Visualization & Persistent Artifacts.
 
-Reads the per-(ticker, window, model) prediction CSVs in
-``results/predictions/`` plus the aggregated tables in ``results/`` and
-renders a fixed set of figures. Every figure is written as both PNG (300
+Reads the per-(ticker, model) prediction CSVs in ``results/predictions/``
+plus the aggregated tables in ``results/`` and renders a fixed set of figures. Every figure is written as both PNG (300
 dpi) and SVG, and the dataframe used to draw it is persisted as CSV next
 to the figure under ``results/figures/data/``.
 
@@ -10,10 +9,8 @@ Design choices
 --------------
 * Pure ``matplotlib`` (no seaborn). ``Agg`` backend so the script works on
   headless boxes (CI, servers).
-* Discovery is filename-driven: a regex over ``results/predictions/*.csv``.
-  NOTE: that regex still expects the retired ``<ticker>_<window>_<model>.csv``
-  naming and so currently matches nothing the pipeline writes — see
-  docs/REFACTOR-BACKLOG.md, Defects 2 and 3.
+* Discovery is filename-driven: a regex over ``results/predictions/*.csv``
+  matching ``<TICKER>_<MODEL>.csv``. Adding tickers needs no code change here.
 * Filenames are deterministic and include the parameters they describe,
   so re-rendering is idempotent.
 * Model order, color and linestyle come from the registry in ``src.models``
@@ -61,10 +58,19 @@ ROLLING_ERROR_WINDOW: int = 60
 #: Number of trailing steps shown in the actual-vs-predicted plots.
 ACTUAL_VS_PRED_TAIL: int = 200
 
-#: Filename regex for ``results/predictions/*.csv``. Capture groups are
-#: ``ticker``, ``window``, ``model``.
+#: Per-pair renderers still take a ``window`` argument, which they use only for
+#: the figure title and filename. Each model carries its own lookback now, so
+#: there is no shared window to report; both call sites pass this. Removing the
+#: argument would rename every per-pair figure the runner writes, so it is left
+#: as a follow-up rather than folded into a bug fix.
+_NOMINAL_WINDOW: int = 0
+
+#: Prediction filenames as ``src.evaluate`` writes them: ``<TICKER>_<MODEL>.csv``.
+#: The model name is the last underscore-separated field, so the ticker pattern
+#: is non-greedy — model names carry digits (``ma30``, ``arma60``) and a greedy
+#: split would swallow them.
 _PREDICTION_FILENAME = re.compile(
-    r"(?P<ticker>[A-Za-z0-9]+)_(?P<window>\d+)_(?P<model>[A-Za-z0-9]+)\.csv$"
+    r"^(?P<ticker>[A-Za-z0-9]+?)_(?P<model>[A-Za-z0-9]+)\.csv$"
 )
 
 __all__ = [
@@ -147,22 +153,21 @@ def figure_dirs(figures_dir: str, figures_data_dir: str) -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-def discover_predictions(predictions_dir: str = config.PREDICTIONS_DIR) -> Dict[Tuple[str, int], Dict[str, pd.DataFrame]]:
-    """Return a nested mapping ``(ticker, window) -> {model: df}``.
+def discover_predictions(
+    predictions_dir: str = config.PREDICTIONS_DIR,
+) -> Dict[str, Dict[str, pd.DataFrame]]:
+    """Return a nested mapping ``ticker -> {model: df}``.
 
-    ``df`` has columns ``[idx, y_true, y_pred]`` exactly as written by
-    Phase 4. Unknown filenames are skipped silently.
+    ``df`` has columns ``[idx, y_true, y_pred]`` exactly as the runner writes
+    them. Filenames that do not match are skipped silently, so stray files in
+    the directory are harmless.
     """
-    out: Dict[Tuple[str, int], Dict[str, pd.DataFrame]] = {}
+    out: Dict[str, Dict[str, pd.DataFrame]] = {}
     for path in sorted(glob.glob(os.path.join(predictions_dir, "*.csv"))):
-        m = _PREDICTION_FILENAME.search(os.path.basename(path))
+        m = _PREDICTION_FILENAME.match(os.path.basename(path))
         if not m:
             continue
-        ticker = m.group("ticker")
-        window = int(m.group("window"))
-        model = m.group("model")
-        df = pd.read_csv(path)
-        out.setdefault((ticker, window), {})[model] = df
+        out.setdefault(m.group("ticker"), {})[m.group("model")] = pd.read_csv(path)
     return out
 
 
@@ -189,14 +194,18 @@ def _cumulative_error_frame(
 
 
 def _rolling_error_frame(
-    model_dict: Dict[str, pd.DataFrame], window: int, kind: str
+    model_dict: Dict[str, pd.DataFrame], kind: str
 ) -> Tuple[pd.DataFrame, int]:
-    """Wide frame of rolling RMSE/MAE per model.
+    """Wide frame of rolling RMSE/MAE per model, plus the span used.
 
-    ``window`` here is the *rolling backtest* window (60 or 120). The
-    actual smoothing window is ``min(ROLLING_ERROR_WINDOW, window)``.
+    The smoothing span is capped by the number of steps available rather than
+    by a backtest window. It used to be ``min(ROLLING_ERROR_WINDOW, W)``, which
+    stopped meaning anything when the unified window was retired: callers pass
+    no real window any more, so the cap collapsed to 0 and ``rolling(0)``
+    raised. Capping by the data is what the cap was for.
     """
-    smooth = min(ROLLING_ERROR_WINDOW, window)
+    n_steps = max((len(df) for df in model_dict.values()), default=0)
+    smooth = max(1, min(ROLLING_ERROR_WINDOW, n_steps))
     pieces = []
     for model in ordered_models(model_dict):
         df = model_dict[model]
@@ -271,7 +280,7 @@ def plot_rolling_error(
     kind: str,
 ) -> List[str]:
     """``kind`` ∈ {``'rmse'``, ``'mae'``}."""
-    df, smooth = _rolling_error_frame(model_dict, window, kind)
+    df, smooth = _rolling_error_frame(model_dict, kind)
 
     fig, ax = plt.subplots(figsize=(10, 6))
     for model in ordered_models(model_dict):
@@ -357,75 +366,79 @@ def _load_metrics(path: Optional[str] = None) -> pd.DataFrame:
     df = pd.read_csv(path)
     # Stable model ordering for plotting.
     df["model"] = pd.Categorical(df["model"], categories=list(MODEL_ORDER), ordered=True)
-    return df.sort_values(["tier", "window", "model"]).reset_index(drop=True)
+    return df.sort_values(["tier", "model"]).reset_index(drop=True)
 
 
-def plot_metric_by_model_tier(metric: str) -> List[str]:
-    """Bar chart of ``metric`` (``rmse`` or ``mae``) faceted by tier × window.
+def plot_metric_by_model_tier(metric: str, metrics: Optional[pd.DataFrame] = None) -> List[str]:
+    """Bar chart of ``metric`` (``rmse`` or ``mae``) per model, one panel per tier.
 
-    Layout: rows = window, cols = tier. With only one tier present (the
-    current backtest covers ``tier1`` only) the figure is a single
-    column — still valid, just sparse.
+    Each model carries its own lookback now, so there is no window axis to
+    facet on: the layout is a single row of tiers. Values are averaged across
+    the tickers in a tier, since ``metrics.csv`` is per (tier, ticker, model).
     """
-    metrics = _load_metrics()
+    if metrics is None:
+        metrics = _load_metrics()
     tiers = sorted(metrics["tier"].unique())
-    windows = sorted(metrics["window"].unique())
-
-    n_rows = max(1, len(windows))
     n_cols = max(1, len(tiers))
     fig, axes = plt.subplots(
-        n_rows,
-        n_cols,
-        figsize=(4.0 * n_cols + 2, 3.2 * n_rows + 1),
-        squeeze=False,
-        sharey=True,
+        1, n_cols, figsize=(4.0 * n_cols + 2, 4.2), squeeze=False, sharey=True,
     )
 
-    for r, win in enumerate(windows):
-        for c, tier in enumerate(tiers):
-            ax = axes[r][c]
-            sub = metrics[(metrics["window"] == win) & (metrics["tier"] == tier)]
-            sub = sub.sort_values("model")
-            colors = [color_for(m) for m in sub["model"]]
-            ax.bar(sub["model"].astype(str), sub[metric], color=colors)
-            ax.set_title(f"{tier} — window={win}")
-            ax.set_ylabel(metric.upper() if c == 0 else "")
-            ax.grid(True, axis="y", alpha=0.3)
-            ax.tick_params(axis="x", rotation=30)
+    for c, tier in enumerate(tiers):
+        ax = axes[0][c]
+        sub = metrics[metrics["tier"] == tier]
+        means = sub.groupby("model", observed=True)[metric].mean().reset_index()
+        means = means.sort_values("model")
+        ax.bar(
+            means["model"].astype(str), means[metric],
+            color=[color_for(m) for m in means["model"]],
+        )
+        ax.set_title(str(tier))
+        ax.set_ylabel(f"mean {metric.upper()}" if c == 0 else "")
+        ax.grid(True, axis="y", alpha=0.3)
+        ax.tick_params(axis="x", rotation=30)
 
-    fig.suptitle(f"{metric.upper()} by model (rows=window, cols=tier)", y=1.02)
+    fig.suptitle(f"Mean {metric.upper()} by model (one panel per tier)", y=1.02)
     fig.tight_layout()
 
     base = f"{metric}_by_model_tier"
     return save_fig_and_data(fig, metrics, base)
 
 
-def plot_ensemble_vs_best(tier: str, window: int, metrics: pd.DataFrame) -> List[str]:
-    sub = metrics[(metrics["tier"] == tier) & (metrics["window"] == window)]
+def plot_ensemble_vs_best(tier: str, metrics: pd.DataFrame) -> List[str]:
+    """Compare the ensemble against the best single model within one tier.
+
+    Both are tier-level means across tickers, so the comparison answers "does
+    averaging the models beat the best one" rather than comparing two rows that
+    happen to belong to different tickers.
+    """
+    sub = metrics[metrics["tier"] == tier]
     if sub.empty:
         return []
 
-    ensemble_row = sub[sub["model"] == "ensemble"]
-    others = sub[sub["model"] != "ensemble"].sort_values("rmse")
+    means = (
+        sub.groupby("model", observed=True)[["rmse", "mae"]].mean().reset_index()
+    )
+    ensemble_row = means[means["model"] == "ensemble"]
+    others = means[means["model"] != "ensemble"].sort_values("rmse")
     if ensemble_row.empty or others.empty:
         return []
 
     best_row = others.iloc[[0]]
-    plot_df = pd.concat([ensemble_row, best_row], ignore_index=True)[
-        ["tier", "window", "model", "rmse", "mae"]
-    ]
+    plot_df = pd.concat([ensemble_row, best_row], ignore_index=True)
+    plot_df.insert(0, "tier", tier)
 
     fig, ax = plt.subplots(figsize=(6, 5))
     colors = [color_for(m) for m in plot_df["model"]]
     ax.bar(plot_df["model"].astype(str), plot_df["rmse"], color=colors)
     for i, val in enumerate(plot_df["rmse"]):
         ax.text(i, val, f"{val:.4f}", ha="center", va="bottom", fontsize=9)
-    ax.set_title(f"Ensemble vs best single model — {tier} (window={window})")
-    ax.set_ylabel("RMSE")
+    ax.set_title(f"Ensemble vs best single model — {tier}")
+    ax.set_ylabel("mean RMSE")
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
 
-    base = f"ensemble_vs_best_{tier}_{window}"
+    base = f"ensemble_vs_best_{tier}"
     return save_fig_and_data(fig, plot_df, base)
 
 
@@ -480,14 +493,13 @@ def render_all() -> List[Tuple[str, str]]:
     """
     artifacts: List[Tuple[str, str]] = []
 
-    # 1) Per-(ticker, window) figures — dispatch through the registry.
+    # 1) Per-ticker figures — dispatch through the registry.
     discovered = discover_predictions()
-    for (ticker, window), model_dict in sorted(discovered.items()):
+    for ticker, model_dict in sorted(discovered.items()):
         if not model_dict:
             continue
         for renderer in _PER_PAIR_FIGURE_REGISTRY.values():
-            paths = renderer(model_dict, ticker, window)
-            for p in paths:
+            for p in renderer(model_dict, ticker, _NOMINAL_WINDOW):
                 artifacts.append((os.path.basename(p), "per-pair"))
 
     # 2) Cross-tier metric figures.
@@ -498,15 +510,12 @@ def render_all() -> List[Tuple[str, str]]:
 
     if not metrics.empty:
         for metric in _AGGREGATE_METRICS:
-            paths = plot_metric_by_model_tier(metric)
-            for p in paths:
+            for p in plot_metric_by_model_tier(metric, metrics):
                 artifacts.append((os.path.basename(p), "aggregate"))
 
         for tier in sorted(metrics["tier"].unique()):
-            for window in sorted(metrics["window"].unique()):
-                paths = plot_ensemble_vs_best(tier, window, metrics)
-                for p in paths:
-                    artifacts.append((os.path.basename(p), "ensemble-vs-best"))
+            for p in plot_ensemble_vs_best(tier, metrics):
+                artifacts.append((os.path.basename(p), "ensemble-vs-best"))
 
     return artifacts
 

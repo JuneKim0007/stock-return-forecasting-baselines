@@ -101,6 +101,7 @@ def _run_one_ticker_into_tier(
     *,
     conn,
     models_factory: Callable[[], List[ForecasterProtocol]],
+    refresh: bool = False,
 ) -> List[Dict[str, Any]]:
     """Run the new-API per-model-lookback evaluation for one ticker.
 
@@ -111,7 +112,7 @@ def _run_one_ticker_into_tier(
     """
     from src.data import load_returns  # local import — avoids cycles
 
-    df = load_returns(ticker, conn=conn)
+    df = load_returns(ticker, conn=conn, refresh=refresh)
     if df.empty or "log_return" not in df.columns:
         logger.warning("[%s/%s] empty or malformed return series — skip",
                        tier_name, ticker)
@@ -170,12 +171,18 @@ def _render_per_pair_figures(
     if not model_dict:
         return
 
+    logger = get_logger("runner")
     with figure_dirs(str(individual_dir), str(individual_data_dir)):
-        for renderer in _PER_PAIR_FIGURE_REGISTRY.values():
+        for kind, renderer in _PER_PAIR_FIGURE_REGISTRY.items():
             try:
                 renderer(model_dict, ticker, 0)
-            except Exception:  # noqa: BLE001
-                continue
+            except Exception as exc:  # noqa: BLE001
+                # Non-fatal: a missing figure must not cost us the run's
+                # measurements. But it is logged — a silent swallow here hid
+                # two of the five figure types failing on every single run.
+                logger.warning(
+                    "[%s] figure %r failed: %s", ticker, kind, exc,
+                )
 
 
 def _resolve_active_tiers(
@@ -302,6 +309,7 @@ def _backtest_tier(
     logger: logging.Logger,
     *,
     models_factory: Callable[[], List[ForecasterProtocol]],
+    refresh: bool = False,
 ) -> List[Dict[str, Any]]:
     """Backtest every ticker in one tier and write that tier's summary.
 
@@ -327,7 +335,7 @@ def _backtest_tier(
         try:
             rows_out.extend(_run_one_ticker_into_tier(
                 tname, ticker, tier_dir, logger,
-                conn=conn, models_factory=models_factory,
+                conn=conn, models_factory=models_factory, refresh=refresh,
             ))
         except Exception as exc:  # noqa: BLE001
             logger.error("[%s/%s] FAILED: %s", tname, ticker, exc)
@@ -477,7 +485,7 @@ def run_test(
         ticker_rows.extend({"tier": tname, "ticker": t} for t in selected)
         all_rows.extend(_backtest_tier(
             tname, tier_dirs[tname], selected, test_root, conn, logger,
-            models_factory=models_factory,
+            models_factory=models_factory, refresh=refresh_cache,
         ))
 
     _write_run_tables(test_root, all_rows, ticker_rows)

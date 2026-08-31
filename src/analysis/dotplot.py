@@ -66,7 +66,7 @@ def render_dotplot(
     out_path: Path,
     jitter: float = 0.12,
 ) -> Path:
-    """One PNG + sidecar CSV. ``summaries`` columns: ticker, window, model, rmse, mae.
+    """One PNG + sidecar CSV. ``summaries`` columns: ticker, model, rmse, mae.
 
     The figure shows one dot per stock plus a per-model ±1 std range bar
     centred on the mean so the cross-stock volatility is visible at a
