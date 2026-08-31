@@ -1,69 +1,41 @@
-"""Phase 2 — Forecasting models.
+"""One-step-ahead forecasting models.
 
-A small zoo of one-step-ahead forecasters sharing a uniform interface:
+Every forecaster implements the same two-call interface, which the rolling
+engine (``src.rolling``) drives once per test step::
 
-    class Forecaster(ABC):
-        name: str
-        def fit(self, y: np.ndarray) -> None: ...
-        def predict_one(self) -> float: ...
+    model.fit(y_window)          # 1-D non-empty float array
+    yhat = model.predict_one()   # Python float, possibly nan
 
-`fit(y)` is called every rolling step with the in-window log-return slice;
-`predict_one()` returns the one-step-ahead forecast for the next observation.
+Contract every subclass must honour
+-----------------------------------
+* ``fit`` accepts any 1-D non-empty array and never raises. A model needing
+  more observations than the window holds degrades instead — see
+  :class:`MovingAverageModel`, which falls back to the mean of what it has.
+* ``predict_one`` returns a Python ``float`` and never raises. ``nan`` is a
+  legitimate return in exactly two cases: called before any ``fit``, or every
+  numerical path inside ``fit`` failed and the fallback is itself non-finite.
+  Callers must tolerate it — the post-hoc ensemble averages with ``np.nanmean``
+  so one ``nan`` child does not poison the result.
+* ``fit`` and ``predict_one`` mutate neither ``y`` nor anything outside
+  ``self``. This module performs no I/O.
+* Given the same window and prior state, the forecast is deterministic.
 
-Behavioural (LSP) contract that all concrete subclasses honour
---------------------------------------------------------------
-* **fit precondition (weakened from "any array"):** ``y`` must be a 1-D,
-  non-empty ``np.ndarray`` (or array-like).  Subclasses must not require a
-  *longer* ``y`` than the window supplied by the rolling engine.  Any length
-  requirement is silently handled internally (e.g. MA falls back to the full
-  mean when ``len(y) < s``).
-* **fit postcondition:** after ``fit(y)`` returns, ``predict_one()`` is ready
-  to produce a valid Python ``float`` (possibly ``nan`` — see below).
-* **predict_one return type:** always a *Python* ``float``, never
-  ``np.float64`` or any other numeric subtype.  The rolling engine wraps
-  every call in ``float(...)`` as a belt-and-suspenders guard, so coercion
-  at the call site is redundant but harmless.
-* **nan is a valid return:** ``predict_one()`` may return ``float('nan')``
-  in two sanctioned cases:
-    1. It is called before any ``fit()`` has been made (undefined state).
-    2. Every numerical path inside ``fit`` failed (e.g. ARMA convergence
-       failure on a degenerate series) and the fallback itself is non-finite.
-  Callers (``src.rolling``, ``EnsembleModel``) must tolerate ``nan`` without
-  raising.  ``EnsembleModel`` explicitly uses ``np.nanmean`` so that a single
-  ``nan`` child does not poison the ensemble average.
-* **determinism:** given the same ``y`` and the same internal state prior to
-  ``fit``, ``predict_one()`` returns the same value every time.  ARMAModel
-  deviates slightly: it caches the last AIC-selected order across windows to
-  amortise the grid search, so the *order chosen* depends on history — but
-  the *forecast* is deterministic given the fitted result at each step.
-* **no side-effects beyond self:** ``fit`` and ``predict_one`` must not
-  mutate ``y``, write files, emit log messages, or raise for any input that
-  satisfies the precondition above.
+Cross-window state is overwritten by each ``fit``, with one deliberate
+exception: :class:`ARMAModel` caches its AIC-selected order ``(p*, q*)`` and
+re-searches only every ``refit_every`` calls, because the grid search dominates
+runtime. The order chosen therefore depends on history; the forecast given that
+order does not.
 
-Models are stateless across windows in the sense that ``fit`` overwrites prior
-state, with one deliberate exception: :class:`ARMAModel` caches the last
-AIC-selected order ``(p*, q*)`` to amortize the grid search across rolling
-windows (re-searched every ``refit_every`` calls).
-
-Design patterns
----------------
-* **Strategy** — every concrete class follows the same ``Forecaster`` ABC,
-  letting the rolling engine (``src.rolling``) depend only on the abstract
-  interface rather than any concrete implementation (Dependency Inversion).
-* **Factory / Registry** — :func:`model_factory` and :func:`default_models`
-  centralise construction so callers never ``import`` concrete classes to
-  build a model by name.  Adding a new model only requires registering it in
-  ``_MODEL_REGISTRY``; no changes needed in ``evaluate.py`` or ``rolling.py``.
-
-This module is deliberately I/O-free — Phase 4 owns the rolling loop, metric
-computation, and persistence.
+The module also owns the model-metadata registry (:data:`MODEL_ORDER`,
+:data:`MODEL_COLORS`, :func:`ordered_models`) that ``src.plots``,
+``src.summary`` and ``src.analysis.dotplot`` all render from.
 """
 
 from __future__ import annotations
 
 import warnings
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+from typing import Dict, Iterable, List, Optional, Protocol, Tuple, runtime_checkable
 
 import numpy as np
 
@@ -95,18 +67,11 @@ warnings.filterwarnings("ignore", category=UserWarning, module=r"statsmodels.*")
 
 @runtime_checkable
 class ForecasterProtocol(Protocol):
-    """Structural (duck-typing) counterpart to the :class:`Forecaster` ABC.
+    """Structural counterpart to :class:`Forecaster`, for runtime checks.
 
-    Any object that exposes a ``name: str``, a ``fit(y: np.ndarray) -> None``
-    method, and a ``predict_one() -> float`` method satisfies this Protocol —
-    even if it does not inherit from :class:`Forecaster`.  This is used to
-    type-check injected callables and third-party adapters at runtime via
-    ``isinstance(obj, ForecasterProtocol)``.
-
-    LSP note: the full behavioural contract (nan semantics, no-raise
-    requirement, return-type guarantee) is documented in the module docstring
-    and in :class:`Forecaster`.  This Protocol captures only the *structural*
-    part that ``typing`` can verify statically.
+    Anything exposing ``name``, ``fit`` and ``predict_one`` satisfies this,
+    inheritance or not. It captures only what ``typing`` can verify; the
+    behavioural half of the contract is in the module docstring.
     """
 
     name: str
@@ -117,46 +82,12 @@ class ForecasterProtocol(Protocol):
 
 
 class Forecaster(ABC):
-    """Abstract base class for a one-step-ahead forecaster (Strategy pattern).
+    """Abstract base for a one-step-ahead forecaster.
 
-    Every concrete forecaster **must** supply a ``name`` class attribute and
-    implement both :meth:`fit` and :meth:`predict_one`.  Using ``ABC`` makes
-    the contract explicit and raises ``TypeError`` at instantiation time if a
-    subclass forgets either abstract method — catching bugs before the rolling
-    engine ever runs.
-
-    Dependency-Inversion note: ``src.rolling`` and ``src.evaluate`` depend
-    only on this abstract type, never on concrete subclasses.
-
-    Liskov Substitution contract (summary — full details in module docstring):
-    - ``fit(y)`` accepts any 1-D non-empty array without raising.
-    - ``predict_one()`` always returns a Python ``float`` (may be ``nan``).
-    - Subclasses must not strengthen the precondition (e.g. require longer y).
-    - Subclasses must not weaken the postcondition (e.g. return non-float).
-
-    Rolling-engine calling convention (``src.rolling``):
-        The rolling engine calls ``fit(slice)`` immediately followed by
-        ``predict_one()`` exactly once per window step, in strict sequence::
-
-            for t in range(window, n):
-                model.fit(y[t - window : t])   # in-window slice (length == window)
-                yhat = float(model.predict_one())
-
-        Subclasses **must** honour this protocol:
-
-        1. ``fit`` is always called before ``predict_one`` at each step —
-           never the reverse, never ``predict_one`` without a preceding
-           ``fit`` (except the unfitted-state ``nan`` edge case documented
-           in the module docstring).
-        2. The slice length equals the requested rolling window (``W``), so
-           ``len(y)`` is always ``>= 1``.  Subclasses that need a minimum
-           of ``s > W`` observations must degrade gracefully (see
-           :class:`MovingAverageModel` for the canonical fallback pattern).
-        3. ``predict_one`` must return the forecast corresponding to the
-           *most recent* ``fit`` call.  State from earlier steps may be
-           retained only as an optimisation (e.g. :class:`ARMAModel` caches
-           the AIC-selected order), but the *forecast value* must reflect
-           the current window's fit.
+    Subclasses supply a ``name`` and implement both methods; ``ABC`` turns a
+    missing one into a ``TypeError`` at construction rather than a failure
+    mid-run. ``src.rolling`` and ``src.evaluate`` depend on this type, never on
+    a concrete model. The behavioural contract is in the module docstring.
     """
 
     #: Short machine-readable label used as dict keys and CSV column names.
@@ -262,14 +193,8 @@ class ExpandingMeanModel(Forecaster):
 class MovingAverageModel(Forecaster):
     """Predict the next value as the mean of the last ``s`` observations.
 
-    LSP note — weakened precondition (safe):
-        The rolling engine may supply windows shorter than ``s`` during early
-        steps.  Rather than raising (which would strengthen the precondition
-        and violate LSP), ``fit`` silently falls back to the mean of all
-        available observations when ``len(y) < s``.  This *weakens* the
-        precondition relative to a strict "need exactly s points" reading —
-        the subtype is more permissive than a naive reading of the name would
-        suggest, which is LSP-safe.
+    Falls back to the mean of all available data when the window is shorter
+    than ``s``, rather than raising — the engine may supply short windows.
     """
 
     kind: str = "windowed"
@@ -283,14 +208,7 @@ class MovingAverageModel(Forecaster):
         self._mean: float = float("nan")
 
     def fit(self, y: np.ndarray) -> None:
-        """Fit on the last ``s`` observations of ``y``, or all of ``y`` if shorter.
-
-        When ``len(y) < self.s`` the model degrades gracefully to the full-window
-        mean rather than raising, preserving the base-class precondition (any
-        1-D non-empty array is accepted without error).
-        """
         if len(y) < self.s:
-            # Window shorter than s — fall back to the available data.
             self._mean = float(np.mean(y))
         else:
             self._mean = float(np.mean(y[-self.s :]))
@@ -325,23 +243,9 @@ class ARMAModel(Forecaster):
     refit_every : int
         Re-run the AIC grid search every ``refit_every`` calls to ``fit``.
 
-    LSP notes
-    ---------
-    * **Documented deviation from pure statelesness:** ``_best_order`` and
-      ``_step`` persist across ``fit`` calls on successive rolling windows.
-      This is an intentional performance optimisation, not an LSP violation —
-      the behavioural contract guarantees that ``predict_one()`` always returns
-      a finite Python ``float`` after any ``fit``, regardless of the cached
-      order.  The only observable cross-window effect is *which* ARMA order is
-      fitted; the output type and range (finite float) are invariant.
-    * **Fallback semantics:** when every ``(p, q)`` candidate fails AND no
-      prior order is cached, the model uses the window mean as a fallback so
-      that ``predict_one()`` never raises.  If the window mean itself is
-      non-finite (e.g. all-NaN input), the return is ``nan`` — the one
-      sanctioned case where a finite result cannot be guaranteed.
-    * **predict_one before fit:** returns ``float('nan')`` (initial
-      ``_forecast`` value).  The rolling engine always calls ``fit`` before
-      ``predict_one``, so this edge case does not arise in production.
+    Fallbacks: a failing ``(p, q)`` candidate is skipped; if every candidate
+    fails and no order is cached, the window mean is used, so ``predict_one``
+    still returns a float.
     """
 
     kind: str = "windowed"
@@ -472,11 +376,6 @@ class ARMAModel(Forecaster):
 
 
 # ---------------------------------------------------------------------------
-# Ensemble
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Convenience factories
 # ---------------------------------------------------------------------------
 
@@ -515,116 +414,98 @@ def default_models() -> List[Forecaster]:
 
 
 # ---------------------------------------------------------------------------
-# Factory / Registry
+# Model metadata registry
 # ---------------------------------------------------------------------------
+#
+# One source for "which models exist, in what order, in what colour". Consumed
+# by src.plots, src.summary, src.analysis.dotplot and src.evaluate.
+#
+# Note this is NOT the name -> constructor registry that used to live here: that
+# one had no callers and was deleted. This one holds presentation metadata that
+# four modules were previously each keeping their own divergent copy of, which
+# is how six of nine models ended up sharing one fallback colour.
+#
+# It is DERIVED from ``default_models()`` rather than hand-listed, so a new
+# entry in ``MA_LOOKBACKS`` / ``ARMA_LOOKBACKS`` cannot produce a model that has
+# no row here. Hand-listing is what caused the original drift.
 
-#: Internal registry mapping model names to zero-argument factory callables.
-#: Each callable returns a *fresh* :class:`Forecaster` instance with
-#: config-driven defaults baked in.  Extend this dict to add a new model
-#: without touching any other module (Open/Closed Principle).
-_MODEL_REGISTRY: Dict[str, Callable[[], Forecaster]] = {}
+#: Name of the post-hoc ensemble. Not a ``Forecaster`` — it is averaged from
+#: the others after the fact — so it is appended rather than derived.
+ENSEMBLE_NAME: str = "ensemble"
+
+#: Matplotlib ``tab10`` minus its grey, which is reserved as the fallback below
+#: so an unregistered model is visibly anomalous rather than quietly plausible.
+_PALETTE: Tuple[str, ...] = (
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d628a7",
+    "#9467bd", "#8c564b", "#e377c2", "#bcbd22",
+)
+
+#: Returned for any name not in :data:`MODEL_COLORS`.
+UNKNOWN_MODEL_COLOR: str = "#444444"
 
 
-def register_model(name: str, factory: Callable[[], Forecaster]) -> None:
-    """Register a factory for the model identified by ``name``.
+def _derive_model_order() -> Tuple[str, ...]:
+    """Canonical model order, read off the lineup ``default_models`` builds."""
+    return tuple(m.name for m in default_models()) + (ENSEMBLE_NAME,)
 
-    Parameters
-    ----------
-    name : str
-        The machine-readable label that will appear in CSV outputs and plots.
-    factory : () -> Forecaster
-        Zero-argument callable that constructs and returns a fresh instance.
 
-    Raises
-    ------
-    ValueError
-        If ``name`` is already registered (prevents silent overwrites).
+#: Canonical order — drives legend order and colour assignment.
+MODEL_ORDER: Tuple[str, ...] = _derive_model_order()
+
+#: Colour per model, assigned by position so the same model is the same colour
+#: in every figure.
+MODEL_COLORS: Dict[str, str] = {
+    name: _PALETTE[i % len(_PALETTE)]
+    for i, name in enumerate(MODEL_ORDER)
+    if name != ENSEMBLE_NAME
+}
+MODEL_COLORS[ENSEMBLE_NAME] = "#17becf"
+
+#: Linestyle per model; the ensemble is dashed to set it apart from the
+#: individual learners it averages.
+MODEL_LINESTYLES: Dict[str, str] = {m: "-" for m in MODEL_ORDER}
+MODEL_LINESTYLES[ENSEMBLE_NAME] = "--"
+
+#: Models contributing to the post-hoc ensemble. ``naive`` and ``global`` are
+#: excluded: the first is the trivial benchmark, the second is future-leaking.
+ENSEMBLE_CHILDREN: Tuple[str, ...] = tuple(
+    n for n in MODEL_ORDER if n not in ("naive", "global", ENSEMBLE_NAME)
+)
+
+
+def color_for(model: str) -> str:
+    """Colour for ``model``, or :data:`UNKNOWN_MODEL_COLOR` if unregistered."""
+    return MODEL_COLORS.get(model, UNKNOWN_MODEL_COLOR)
+
+
+def linestyle_for(model: str) -> str:
+    """Linestyle for ``model``, solid if unregistered."""
+    return MODEL_LINESTYLES.get(model, "-")
+
+
+def ordered_models(names: Iterable[str]) -> List[str]:
+    """Return the distinct ``names`` in :data:`MODEL_ORDER` order.
+
+    Names outside the canonical order are appended alphabetically, so an
+    unrecognised model is still plotted rather than dropped. Accepts anything
+    iterable of names — a list, a ``dict`` keyed by model, a pandas Series.
     """
-    if name in _MODEL_REGISTRY:
-        raise ValueError(
-            f"A model named {name!r} is already registered. "
-            "Use a different name or unregister the existing entry first."
-        )
-    _MODEL_REGISTRY[name] = factory
-
-
-def model_factory(name: str) -> Forecaster:
-    """Construct and return a fresh :class:`Forecaster` by *name*.
-
-    This is the preferred way to build models by string identifier (e.g. when
-    re-loading results from CSV and needing a matching fresh instance).
-
-    Parameters
-    ----------
-    name : str
-        Must be a key in :data:`_MODEL_REGISTRY`.
-
-    Raises
-    ------
-    KeyError
-        If ``name`` is not registered.
-    """
-    if name not in _MODEL_REGISTRY:
-        available = sorted(_MODEL_REGISTRY)
-        raise KeyError(
-            f"Unknown model {name!r}. Available: {available}"
-        )
-    return _MODEL_REGISTRY[name]()
-
-
-def _populate_registry() -> None:
-    """Seed the registry with the built-in models (called once at module load).
-
-    Reads config for ARMA / MA parameters — same logic as :func:`default_models`.
-    This function is idempotent in the sense that it only runs if the registry
-    is still empty.
-
-    OCP note: built-in model registrations are expressed as a data-driven list
-    of ``(name, factory)`` pairs assembled from config values.  Adding a new
-    built-in model requires only appending one entry to ``_builtins`` below —
-    the loop body never needs to change.  External callers may also call
-    :func:`register_model` directly to add models without touching this file.
-    """
-    if _MODEL_REGISTRY:
-        return  # already populated (e.g. tests importing multiple times)
-
-    try:
-        from src import config as cfg
-        ma_lookbacks = tuple(cfg.MA_LOOKBACKS)
-        arma_lookbacks = tuple(cfg.ARMA_LOOKBACKS)
-        max_p = int(cfg.ARMA_MAX_P)
-        max_q = int(cfg.ARMA_MAX_Q)
-        refit_every = int(cfg.ARMA_REFIT_EVERY)
-    except Exception:  # pragma: no cover — config missing/broken
-        ma_lookbacks = (30, 60, 90)
-        arma_lookbacks = (60, 90)
-        max_p, max_q, refit_every = 4, 4, 20
-
-    _builtins: List[Tuple[str, Callable[[], Forecaster]]] = [
-        ("naive", NaiveModel),
-        ("global", GlobalMeanModel),
-        ("expanding", ExpandingMeanModel),
-    ]
-    for s in ma_lookbacks:
-        s_int = int(s)
-        _builtins.append((f"ma{s_int}", lambda _s=s_int: MovingAverageModel(_s)))
-    for L in arma_lookbacks:
-        L_int = int(L)
-        _builtins.append((
-            f"arma{L_int}",
-            lambda _p=max_p, _q=max_q, _r=refit_every, _L=L_int:
-                ARMAModel(max_p=_p, max_q=_q, refit_every=_r, lookback=_L),
-        ))
-
-    for name, factory in _builtins:
-        _MODEL_REGISTRY[name] = factory
-
-
-_populate_registry()
+    seen = set(names)
+    known = [m for m in MODEL_ORDER if m in seen]
+    return known + sorted(seen - set(MODEL_ORDER))
 
 
 __all__ = [
     "Forecaster",
+    "ENSEMBLE_NAME",
+    "ENSEMBLE_CHILDREN",
+    "MODEL_ORDER",
+    "MODEL_COLORS",
+    "MODEL_LINESTYLES",
+    "UNKNOWN_MODEL_COLOR",
+    "color_for",
+    "linestyle_for",
+    "ordered_models",
     "ForecasterProtocol",
     "NaiveModel",
     "GlobalMeanModel",
@@ -632,7 +513,4 @@ __all__ = [
     "MovingAverageModel",
     "ARMAModel",
     "default_models",
-    "register_model",
-    "model_factory",
-    "_MODEL_REGISTRY",
 ]

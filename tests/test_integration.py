@@ -1,12 +1,8 @@
-"""Integration tests — Phase 3.
+"""Integration test: ARMA must be competitive on a series it should model well.
 
-These exercise a *minimal* in-test rolling loop (Phase 4 has not yet built
-``src/rolling.py`` — do NOT import from there). Two checks:
-
-1. On a synthetic AR(1) process, ARMA's RMSE must be at most 5 % worse than
-   Naive's. ARMA should be at least competitive on a true AR process.
-2. On a real ticker pulled from the manifest, a 30-step rolling forecast with
-   the trivial baselines must yield no NaNs and the right number of rows.
+Drives a minimal rolling loop in-test rather than through ``src.rolling``, so
+the assertion is about the model rather than the engine: on a synthetic AR(1)
+process, ARMA's RMSE must be within 5% of Naive's.
 """
 
 from __future__ import annotations

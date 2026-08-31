@@ -109,7 +109,6 @@ def test_run_test_smoke_tier1_only(tiny_setup, monkeypatch):
         out_root=tiny_setup["out_root"],
         seed=0,
         tiers_subset=["tier1"],
-        windows=(60,),
         models_factory=lambda: [NaiveModel()],
     )
 

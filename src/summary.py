@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence
 
 import matplotlib
 
@@ -30,7 +30,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from src.metrics import mae as _mae, rmse as _rmse
-from src.plots import MODEL_COLORS, color_for
+from src.models import color_for, ordered_models
 
 
 _PRED_RE = re.compile(r"^(?P<ticker>[A-Za-z0-9]+)_(?P<model>[A-Za-z0-9]+)\.csv$")
@@ -125,16 +125,6 @@ def _model_summary(per_ticker: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def _ordered_models(models_present: Sequence[str]) -> List[str]:
-    """Stable model order: known model order first, then any extras alphabetically."""
-    canonical = ["naive", "global", "expanding", "ma30", "ma60", "ma90",
-                 "arma60", "arma90", "ensemble"]
-    seen = set(models_present)
-    ordered = [m for m in canonical if m in seen]
-    extras = sorted(seen - set(canonical))
-    return ordered + extras
-
-
 def _plot_summary_bars(
     summary: pd.DataFrame,
     *,
@@ -156,7 +146,7 @@ def _plot_summary_bars(
         plt.close(fig)
         return out_path
 
-    models = _ordered_models(summary["model"].tolist())
+    models = ordered_models(summary["model"].tolist())
     summary = summary.set_index("model").reindex(models).reset_index()
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), sharey=False)
@@ -219,7 +209,7 @@ def _plot_cumulative(
         return out_path
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    for model in _ordered_models(list(cum_by_model.keys())):
+    for model in ordered_models(list(cum_by_model.keys())):
         cum = np.cumsum(cum_by_model[model])
         ax.plot(np.arange(cum.size), cum,
                 color=color_for(model), linewidth=1.4, label=model,
@@ -243,7 +233,7 @@ def _plot_cumulative(
 def _score_histogram(
     per_ticker: pd.DataFrame,
     *,
-    exclude: Sequence[str] = ("naive", "ensemble", "global"),
+    exclude: Iterable[str] = _HISTOGRAM_EXCLUDE,
 ) -> pd.DataFrame:
     """Return ``model, wins`` ranked by wins descending, after dropping
     excluded models from candidate pool."""
@@ -354,7 +344,7 @@ def summarise_overall(test_root: Path, tiers: Sequence[str]) -> List[str]:
         out_path=out_dir / "summary_overall.png",
     )))
 
-    hist = _score_histogram(per_ticker, exclude=("naive", "ensemble", "global"))
+    hist = _score_histogram(per_ticker)
     hist_csv = out_dir / "score_histogram.csv"
     hist.to_csv(hist_csv, index=False)
     written.append(str(hist_csv))

@@ -18,13 +18,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
-from src.models import (
-    ExpandingMeanModel,
-    Forecaster,
-    ForecasterProtocol,
-    GlobalMeanModel,
-    NaiveModel,
-)
+from src.models import ExpandingMeanModel, ForecasterProtocol
 
 
 def run_eval(

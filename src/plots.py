@@ -10,14 +10,14 @@ Design choices
 --------------
 * Pure ``matplotlib`` (no seaborn). ``Agg`` backend so the script works on
   headless boxes (CI, servers).
-* Discovery is filename-driven: a regex over
-  ``results/predictions/*.csv`` finds every
-  ``(ticker, window, model)`` triple. Adding new tickers later only
-  requires re-running the backtest — no code change here.
+* Discovery is filename-driven: a regex over ``results/predictions/*.csv``.
+  NOTE: that regex still expects the retired ``<ticker>_<window>_<model>.csv``
+  naming and so currently matches nothing the pipeline writes — see
+  docs/REFACTOR-BACKLOG.md, Defects 2 and 3.
 * Filenames are deterministic and include the parameters they describe,
   so re-rendering is idempotent.
-* Color palette per model is fixed at module import (``MODEL_COLORS``)
-  so the same model has the same color across every figure.
+* Model order, color and linestyle come from the registry in ``src.models``
+  so the same model looks the same in every figure the project renders.
 
 CLI
 ---
@@ -31,50 +31,27 @@ import glob
 import os
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Dict, Iterable, Iterator, List, Optional, Protocol, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import matplotlib
 
 matplotlib.use("Agg")  # noqa: E402 — must precede pyplot import.
 
 import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from src import config  # noqa: E402
+from src.models import (  # noqa: E402  — one source for model presentation
+    MODEL_COLORS,
+    MODEL_ORDER,
+    color_for,
+    linestyle_for,
+    ordered_models,
+)
 
 # ---------------------------------------------------------------------------
 # Constants & palette
 # ---------------------------------------------------------------------------
-
-#: Fixed model order (drives legend order and color palette).
-MODEL_ORDER: Tuple[str, ...] = (
-    "naive",
-    "average",
-    "ma10",
-    "ma20",
-    "ma30",
-    "arma",
-    "ensemble",
-)
-
-#: Color per model — Matplotlib's ``tab10`` cycle, frozen so the same
-#: model is the same color across every figure in the report.
-MODEL_COLORS: Dict[str, str] = {
-    "naive": "#1f77b4",
-    "average": "#ff7f0e",
-    "ma10": "#2ca02c",
-    "ma20": "#d62728",
-    "ma30": "#9467bd",
-    "arma": "#8c564b",
-    "ensemble": "#17becf",
-}
-
-#: Linestyle per model; ensemble is dashed to set it apart from the
-#: individual learners.
-MODEL_LINESTYLES: Dict[str, str] = {m: "-" for m in MODEL_ORDER}
-MODEL_LINESTYLES["ensemble"] = "--"
 
 #: Rolling-window size (in steps) used by the rolling-RMSE / rolling-MAE
 #: figures. The actual window used per figure is
@@ -102,9 +79,6 @@ __all__ = [
     "discover_predictions",
     "ordered_models",
     "color_for",
-    # Registry API
-    "PerPairRendererProtocol",
-    "register_per_pair_figure",
     # Top-level orchestration
     "render_all",
 ]
@@ -173,13 +147,6 @@ def figure_dirs(figures_dir: str, figures_data_dir: str) -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class PredKey:
-    ticker: str
-    window: int
-    model: str
-
-
 def discover_predictions(predictions_dir: str = config.PREDICTIONS_DIR) -> Dict[Tuple[str, int], Dict[str, pd.DataFrame]]:
     """Return a nested mapping ``(ticker, window) -> {model: df}``.
 
@@ -199,40 +166,9 @@ def discover_predictions(predictions_dir: str = config.PREDICTIONS_DIR) -> Dict[
     return out
 
 
-def ordered_models(model_dict: Dict[str, pd.DataFrame]) -> List[str]:
-    """Return models in canonical order, with any unknown names appended."""
-    known = [m for m in MODEL_ORDER if m in model_dict]
-    extras = [m for m in model_dict if m not in MODEL_ORDER]
-    return known + sorted(extras)
-
-
-def color_for(model: str) -> str:
-    return MODEL_COLORS.get(model, "#444444")
-
-
-def _linestyle_for(model: str) -> str:
-    return MODEL_LINESTYLES.get(model, "-")
-
-
 # ---------------------------------------------------------------------------
 # Per-(ticker, window) figures
 # ---------------------------------------------------------------------------
-
-
-def _build_long_predictions(model_dict: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Stack each model's ``(idx, y_true, y_pred)`` into a long frame.
-
-    Columns: ``model, idx, y_true, y_pred, sq_err, abs_err``.
-    """
-    rows = []
-    for model in ordered_models(model_dict):
-        df = model_dict[model].copy()
-        df = df[["idx", "y_true", "y_pred"]].copy()
-        df["model"] = model
-        df["sq_err"] = (df["y_true"] - df["y_pred"]) ** 2
-        df["abs_err"] = (df["y_true"] - df["y_pred"]).abs()
-        rows.append(df)
-    return pd.concat(rows, ignore_index=True)
 
 
 def _cumulative_error_frame(
@@ -308,7 +244,7 @@ def plot_cumulative_error(
             df["idx"],
             df[model],
             color=color_for(model),
-            linestyle=_linestyle_for(model),
+            linestyle=linestyle_for(model),
             linewidth=1.6,
             label=model,
         )
@@ -343,7 +279,7 @@ def plot_rolling_error(
             df["idx"],
             df[model],
             color=color_for(model),
-            linestyle=_linestyle_for(model),
+            linestyle=linestyle_for(model),
             linewidth=1.4,
             label=model,
         )
@@ -373,7 +309,7 @@ def plot_actual_vs_pred(
             df["idx"],
             df[model],
             color=color_for(model),
-            linestyle=_linestyle_for(model),
+            linestyle=linestyle_for(model),
             linewidth=1.0,
             alpha=0.85,
             label=model,
@@ -498,68 +434,14 @@ def plot_ensemble_vs_best(tier: str, window: int, metrics: pd.DataFrame) -> List
 # ---------------------------------------------------------------------------
 
 
-class PerPairRendererProtocol(Protocol):
-    """Structural contract for per-(ticker, window) figure renderers registered
-    in :data:`_PER_PAIR_FIGURE_REGISTRY`.
+#: Per-(ticker, window) figure renderers, keyed by figure type. Each value is
+#: called as ``renderer(model_dict, ticker, window)`` and returns the paths it
+#: wrote. Renderers needing an extra ``kind`` argument are wrapped in a lambda
+#: so the dispatch loop can call every entry the same way. Insertion-ordered,
+#: so figures always appear in the same sequence.
+PerPairRenderer = Callable[[Dict[str, pd.DataFrame], str, int], List[str]]
 
-    Any callable that satisfies this signature is a valid entry in the
-    registry and will be called correctly by :func:`render_all`:
-
-    Parameters
-    ----------
-    model_dict : Dict[str, pd.DataFrame]
-        Mapping from model name to its prediction DataFrame (columns:
-        ``idx``, ``y_true``, ``y_pred``).  May contain any subset of the
-        known model names.  The renderer must tolerate an arbitrary set of
-        keys — it must not assume a fixed model list.
-    ticker : str
-        The ticker symbol (used for titles and output filenames).
-    window : int
-        The rolling backtest window size (used for titles and filenames).
-
-    Returns
-    -------
-    List[str]
-        Absolute paths of all artifacts written (PNG, SVG, CSV).  An empty
-        list is valid (e.g. if ``model_dict`` is empty or the renderer
-        decides to skip).  Must never raise.
-
-    LSP / substitutability guarantee
-    ----------------------------------
-    * Any registered renderer is called with exactly these three positional
-      arguments — no keyword arguments are guaranteed.  Renderers that need
-      additional parameters must use closures or ``functools.partial`` (as
-      the built-in lambdas in :data:`_PER_PAIR_FIGURE_REGISTRY` do for
-      ``kind``).
-    * Renderers must not mutate ``model_dict`` (or its DataFrames) in ways
-      visible to other renderers in the same dispatch loop.
-    * Renderers may write files to :data:`config.FIGURES_DIR` and
-      :data:`config.FIGURES_DATA_DIR`; they must not write elsewhere.
-    """
-
-    def __call__(
-        self,
-        model_dict: Dict[str, pd.DataFrame],
-        ticker: str,
-        window: int,
-    ) -> List[str]: ...
-
-
-# Per-(ticker, window) figure renderers.
-#
-# Each entry maps a figure-type key to a callable satisfying
-# :class:`PerPairRendererProtocol`.
-# Renderers that require an extra ``kind`` keyword argument are wrapped in
-# a lambda so the dispatch loop can call every entry with the same three
-# positional arguments.
-#
-# OCP: to add a new per-pair figure type (e.g. a scatter plot), register one
-# new entry here — :func:`render_all` iterates the registry and requires no
-# change to its body.
-#
-# The dict is ordered (Python 3.7+) so figures always appear in the same
-# sequence in the summary table.
-_PER_PAIR_FIGURE_REGISTRY: Dict[str, PerPairRendererProtocol] = {
+_PER_PAIR_FIGURE_REGISTRY: Dict[str, PerPairRenderer] = {
     "cumulative_sq_err": (
         lambda md, t, w: plot_cumulative_error(md, t, w, kind="sq_err")
     ),
@@ -576,43 +458,12 @@ _PER_PAIR_FIGURE_REGISTRY: Dict[str, PerPairRendererProtocol] = {
 }
 
 
-def register_per_pair_figure(
-    key: str,
-    renderer: PerPairRendererProtocol,
-) -> None:
-    """Register a new per-(ticker, window) figure renderer.
-
-    Parameters
-    ----------
-    key : str
-        Unique identifier for the figure type (used as a label in the summary).
-    renderer : PerPairRendererProtocol
-        Callable satisfying ``(model_dict, ticker, window) -> List[str]``.
-        See :class:`PerPairRendererProtocol` for the full LSP contract.
-        Must return a list of absolute file paths written (PNG, SVG, CSV).
-
-    Raises
-    ------
-    ValueError
-        If ``key`` is already registered (prevents silent overwrites).
-    """
-    if key in _PER_PAIR_FIGURE_REGISTRY:
-        raise ValueError(
-            f"A per-pair figure renderer named {key!r} is already registered."
-        )
-    _PER_PAIR_FIGURE_REGISTRY[key] = renderer
-
-
 # Aggregate (cross-tier) figure renderers keyed by metric name.
 #
 # Each value is a zero-argument callable that returns a list of file paths.
 # They are rebuilt inside render_all once the metrics frame is available.
 # This dict is not pre-populated at import time because the renderers need
 # the live metrics frame; render_all constructs fresh callables per run.
-#
-# OCP: to add a new aggregate metric figure, extend the metrics list passed
-# into render_all (or override _AGGREGATE_METRICS) — the loop requires no
-# change.
 _AGGREGATE_METRICS: Tuple[str, ...] = ("rmse", "mae")
 
 
@@ -624,10 +475,8 @@ _AGGREGATE_METRICS: Tuple[str, ...] = ("rmse", "mae")
 def render_all() -> List[Tuple[str, str]]:
     """Render every figure and return a list of (basename, kind) entries.
 
-    Per-pair figures are driven by :data:`_PER_PAIR_FIGURE_REGISTRY` —
-    adding a new figure type is a :func:`register_per_pair_figure` call,
-    not an edit here (OCP). Aggregate metric figures iterate
-    :data:`_AGGREGATE_METRICS`.
+    Per-pair figures are driven by :data:`_PER_PAIR_FIGURE_REGISTRY`;
+    aggregate metric figures iterate :data:`_AGGREGATE_METRICS`.
     """
     artifacts: List[Tuple[str, str]] = []
 

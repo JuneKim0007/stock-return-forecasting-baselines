@@ -15,14 +15,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from src.plots import MODEL_ORDER, color_for
-
-
-def _models_in_order(models_present: pd.Series) -> list:
-    seen = set(models_present.unique().tolist())
-    ordered = [m for m in MODEL_ORDER if m in seen]
-    extras = sorted(seen - set(MODEL_ORDER))
-    return ordered + extras
+from src.models import color_for, ordered_models
 
 
 def _scatter_axis(
@@ -35,7 +28,7 @@ def _scatter_axis(
     and a ±1 standard-deviation range bar overlaid per model. Returns the
     model order used for axis ticks.
     """
-    models = _models_in_order(summaries["model"])
+    models = ordered_models(summaries["model"])
     rng = random.Random(0)
     for mi, model in enumerate(models):
         sub = summaries[summaries["model"] == model]

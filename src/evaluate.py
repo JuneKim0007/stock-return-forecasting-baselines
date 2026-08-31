@@ -10,46 +10,23 @@ writes per-model prediction CSVs, and returns one metric row per model.
 
 from __future__ import annotations
 
-import logging
 import os
-import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 from src.metrics import mae, rmse
-from src.models import ForecasterProtocol
+from src.models import ENSEMBLE_CHILDREN, ENSEMBLE_NAME, ForecasterProtocol
 from src.models import default_models as _default_models
 from src.rolling import run_eval
 
 
-ENSEMBLE_NAME: str = "ensemble"
-#: Children that contribute to the post-hoc ensemble (excludes naive + global).
-ENSEMBLE_CHILDREN: Tuple[str, ...] = (
-    "expanding", "ma30", "ma60", "ma90", "arma60", "arma90",
-)
 
 # Empirical ARMA timing constants (seconds), used by the runner's cost gate.
 ARMA_FULL_SEARCH_LARGE_WINDOW_SECONDS: float = 1.6   # window >= 90
 ARMA_FULL_SEARCH_SMALL_WINDOW_SECONDS: float = 1.1   # window < 90
 ARMA_CACHED_REFIT_STEP_SECONDS: float = 0.005
-
-
-def _setup_logger(level: int = logging.INFO) -> logging.Logger:
-    logger = logging.getLogger("evaluate")
-    if logger.handlers:
-        return logger
-    logger.setLevel(level)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S",
-        )
-    )
-    logger.addHandler(handler)
-    logger.propagate = False
-    return logger
 
 
 def _estimate_arma_cost(n_steps: int, window: int) -> float:
@@ -134,5 +111,4 @@ __all__ = [
     "ENSEMBLE_CHILDREN",
     "run_one_ticker_eval",
     "_estimate_arma_cost",
-    "_setup_logger",
 ]
