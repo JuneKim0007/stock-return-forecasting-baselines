@@ -16,7 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from src.metrics import mae, rmse
+from src.logging_setup import get_logger
+from src.metrics import mae, n_scored, rmse
 from src.models import ENSEMBLE_CHILDREN, ENSEMBLE_NAME, ForecasterProtocol
 from src.models import default_models as _default_models
 from src.rolling import run_eval
@@ -87,13 +88,25 @@ def run_one_ticker_eval(
 
     rows: List[Dict[str, Any]] = []
     for name, (yt, yp) in per_model.items():
+        try:
+            row_rmse, row_mae = rmse(yt, yp), mae(yt, yp)
+        except ValueError:
+            # Nothing finite to score — every forecast failed, or the model's
+            # lookback exceeds the history available before the test window.
+            # Emit no metric row (there is no metric), but say so: a silently
+            # absent model is how a misconfigured lookback stays invisible.
+            get_logger("evaluate").warning(
+                "[%s/%s] %s produced no scoreable forecast over %d test steps "
+                "— omitted from metrics", tier, ticker, name, int(yt.size),
+            )
+            continue
         rows.append({
             "tier": tier,
             "ticker": ticker,
             "model": name,
-            "rmse": rmse(yt, yp),
-            "mae": mae(yt, yp),
-            "n": int(yt.size),
+            "rmse": row_rmse,
+            "mae": row_mae,
+            "n": n_scored(yt, yp),
         })
         if predictions_dir is not None:
             os.makedirs(predictions_dir, exist_ok=True)

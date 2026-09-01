@@ -1,12 +1,12 @@
 # Refactor backlog
 
 Surveyed 2026-08-31 · scope `src/` · 20 files
-Baseline: tests 81 green
-Previous: 64 green (post-defects) · 46 green (post R1–R8) · 39 green (first survey)
+Baseline: tests 90 green
+Previous: 81 · 64 · 46 · 39
 
 R1–R8 closed. Defects 1, 2, 3, 5 and a newly-found Defect 6 fixed 2026-09-01.
 R9 re-evaluated with its blocker cleared and **refused**; R10 dropped as a
-consequence. R11–R14 remain open; R15 dropped.
+consequence. R11 closed. R12–R14 remain open; R15 dropped.
 
 **The organising fact.** The pipeline was migrated from a unified rolling window
 `W` to per-model lookbacks. `src/evaluate.py` was migrated; its readers were not.
@@ -14,16 +14,6 @@ Most findings here are that migration's debt, and the five defects in
 `
 
 ## Open
-
-### R11 · Feature envy · summary.py:75 · analysis/compute.py:30 · evaluate.py:89
-status   open — no remedy decided
-evidence RMSE/MAE are computed three independent times over the same predictions:
-         once into `metrics.csv`, once by `_per_ticker_metrics`, once by
-         `compute_summary`. Three implementations of one piece of knowledge.
-remedy   undecided — the right consolidation depends on whether the analysis stage
-         survives (see Defect 1)
-blocked  Defect 1
-first seen 2026-08-31
 
 ### R12 · Inappropriate intimacy · plots.py:123 · figure_dirs
 status   open — no remedy decided
@@ -117,6 +107,31 @@ runner docstring's `src.evaluate._run_one_ticker` (no such function), the
 plots discovery claim (now points at Defects 2–3), and
 `test_integration.py`'s instruction not to import a module that has existed
 since the initial commit.
+
+### R11 · Feature envy · metrics computed three times — and three ways
+closed 2026-09-01 — the finding understated it. The three implementations did
+not merely duplicate logic, they disagreed: `evaluate` and `analysis.compute`
+propagated `nan`, `summary` masked it. Measured on one 5-step series with a
+single unpredictable step, the same (ticker, model) was reported as `rmse=nan`
+in `metrics.csv`, `0.0132` in `summary_tier1.csv`, and `nan` in `analysis.db`.
+
+That made it a defect rather than a smell, so it went to the user as a
+measurement-semantics decision. Answer: **NaN-tolerant everywhere** — score the
+finite pairs, report the survivor count in `n`. This is the contract
+`src/models.py` already documented (*"callers must tolerate it ... one nan child
+does not poison the result"*) and which `evaluate.py` violated two lines below
+its own `np.nanmean` call.
+
+The policy now lives in `src/metrics.py` alone, with `n_scored` as its companion
+so callers report coverage rather than hiding it. `rmse`/`mae` raise when
+nothing is finite, keeping "nothing could be scored" distinct from "the model
+was perfect". `evaluate` skips such a model with a warning instead of crashing
+the ticker — a gap the new tests caught during the fix.
+
+No output changes under the shipped config: verified a full run scores all 260
+steps for all 18 (ticker, model) pairs with no NaN, and `metrics.csv` now
+provably agrees with `summary_tier1.csv`. Mutation-checked: removing the mask
+fails 6 tests.
 
 ---
 

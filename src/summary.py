@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from src.metrics import mae as _mae, rmse as _rmse
+from src.metrics import mae as _mae, n_scored as _n_scored, rmse as _rmse
 from src.models import color_for, ordered_models
 
 
@@ -75,21 +75,26 @@ def _scan_predictions(pred_dir: Path) -> Dict[str, Dict[str, pd.DataFrame]]:
 def _per_ticker_metrics(
     by_ticker: Dict[str, Dict[str, pd.DataFrame]],
 ) -> pd.DataFrame:
-    """Return long-form: tier(unset), ticker, model, rmse, mae, n."""
+    """Return long-form: tier(unset), ticker, model, rmse, mae, n.
+
+    The nan policy lives in :mod:`src.metrics`; a model with nothing scoreable
+    raises there and is skipped rather than contributing an empty row.
+    """
     rows: List[Dict] = []
     for ticker, model_dict in by_ticker.items():
         for model, df in model_dict.items():
             yt = df["y_true"].to_numpy(dtype=float)
             yp = df["y_pred"].to_numpy(dtype=float)
-            mask = np.isfinite(yt) & np.isfinite(yp)
-            if not mask.any():
-                continue
+            try:
+                row_rmse, row_mae = _rmse(yt, yp), _mae(yt, yp)
+            except ValueError:
+                continue  # nothing finite to score for this model
             rows.append({
                 "ticker": ticker,
                 "model": model,
-                "rmse": _rmse(yt[mask], yp[mask]),
-                "mae": _mae(yt[mask], yp[mask]),
-                "n": int(mask.sum()),
+                "rmse": row_rmse,
+                "mae": row_mae,
+                "n": _n_scored(yt, yp),
             })
     return pd.DataFrame(rows)
 
