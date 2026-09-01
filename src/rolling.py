@@ -18,7 +18,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
-from src.models import ExpandingMeanModel, ForecasterProtocol
+from src.models import ForecasterProtocol
 
 
 def run_eval(
@@ -70,12 +70,15 @@ def run_eval(
             elif kind == "global":
                 preds[m.name][i] = float(m.predict_one())
             elif kind == "expanding":
-                if isinstance(m, ExpandingMeanModel):
+                # A model that can take the running sum directly gets it: that
+                # keeps the expanding mean O(1) per step instead of re-reading
+                # the whole prefix. Asked structurally rather than by class, so
+                # this module keeps depending only on the forecaster interface.
+                if callable(getattr(m, "set_state", None)):
                     m.set_state(cum_sum, cum_n)
-                    preds[m.name][i] = float(m.predict_one())
                 else:
                     m.fit(y_full[train_start:t])
-                    preds[m.name][i] = float(m.predict_one())
+                preds[m.name][i] = float(m.predict_one())
             else:  # windowed
                 L = int(getattr(m, "lookback", 0))
                 if L <= 0 or t - L < 0:

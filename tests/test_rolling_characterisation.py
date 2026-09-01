@@ -82,7 +82,7 @@ class SpyExpanding(_SpyMixin, ExpandingMeanModel):
 
 
 class DuckExpanding:
-    """An ``expanding`` model that is *not* an ``ExpandingMeanModel``.
+    """An ``expanding`` model with no ``set_state``.
 
     Exercises the fallback branch, which re-fits on the whole prefix instead of
     using the running sum.
@@ -215,6 +215,42 @@ def test_expanding_fallback_refits_but_agrees_numerically(y: np.ndarray) -> None
 
     assert len(duck.fit_calls) == 3, "the fallback re-fits once per step"
     np.testing.assert_allclose(slow, fast)
+
+
+def test_expanding_routing_is_decided_by_set_state_not_by_class(
+    y: np.ndarray,
+) -> None:
+    """Any model exposing ``set_state`` gets the running sum.
+
+    NOTE — this is the one place the engine's behaviour was deliberately
+    changed rather than pinned. The branch used to test
+    ``isinstance(m, ExpandingMeanModel)``, which made ``src.rolling`` import a
+    concrete model class and contradicted the invariant stated on
+    ``Forecaster``: that this module depends on the abstraction, "never on a
+    concrete model". Asking structurally honours that.
+
+    The difference is reachable only by a model that exposes ``set_state``
+    without subclassing ``ExpandingMeanModel`` — none exists in this codebase.
+    Such a model previously took the re-fit path and now takes the fast one.
+    The forecasts are identical either way; only the route changes.
+    """
+    class DuckWithSetState(DuckExpanding):
+        name = "duck2"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.set_state_calls = 0
+
+        def set_state(self, running_sum: float, count: int) -> None:
+            self.set_state_calls += 1
+            self._mean = float(running_sum / count) if count else float("nan")
+
+    fast = DuckWithSetState()
+    out = run_eval(y, [fast], [3, 4, 5])
+
+    assert fast.set_state_calls == 3
+    assert fast.fit_calls == [], "a model advertising set_state must not re-fit"
+    np.testing.assert_allclose(out["duck2"][1], [1.0, 1.5, 2.0])
 
 
 def test_expanding_window_excludes_the_step_being_predicted(y: np.ndarray) -> None:
