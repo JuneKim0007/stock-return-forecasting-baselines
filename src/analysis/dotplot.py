@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import random
 from pathlib import Path
 from typing import Dict
@@ -15,14 +14,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from src.plots import MODEL_ORDER, color_for
-
-
-def _models_in_order(models_present: pd.Series) -> list:
-    seen = set(models_present.unique().tolist())
-    ordered = [m for m in MODEL_ORDER if m in seen]
-    extras = sorted(seen - set(MODEL_ORDER))
-    return ordered + extras
+from src.models import color_for, ordered_models
+from src.plots import save_figure
 
 
 def _scatter_axis(
@@ -35,7 +28,7 @@ def _scatter_axis(
     and a ±1 standard-deviation range bar overlaid per model. Returns the
     model order used for axis ticks.
     """
-    models = _models_in_order(summaries["model"])
+    models = ordered_models(summaries["model"])
     rng = random.Random(0)
     for mi, model in enumerate(models):
         sub = summaries[summaries["model"] == model]
@@ -73,22 +66,19 @@ def render_dotplot(
     out_path: Path,
     jitter: float = 0.12,
 ) -> Path:
-    """One PNG + sidecar CSV. ``summaries`` columns: ticker, window, model, rmse, mae.
+    """One PNG + sidecar CSV. ``summaries`` columns: ticker, model, rmse, mae.
 
     The figure shows one dot per stock plus a per-model ±1 std range bar
     centred on the mean so the cross-stock volatility is visible at a
     glance. The sidecar CSV has both the raw rows and a per-model
     aggregate (``model, n, mean, std, min, max``) appended below.
     """
-    out_path = Path(out_path)
-    os.makedirs(out_path.parent, exist_ok=True)
     fig, ax = plt.subplots(figsize=(8, 5))
     _scatter_axis(ax, summaries, metric, jitter=jitter)
     ax.set_ylabel(metric.upper())
     ax.set_title(f"{title}  (mean ± 1 std)")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
+    out_path = save_figure(fig, out_path, dpi=200)
 
     csv_path = out_path.with_suffix(".csv")
     agg = (
@@ -113,8 +103,6 @@ def render_combined_dotplot(
     out_path: Path,
 ) -> Path:
     """Side-by-side subplots — one per tier — sharing the y-axis."""
-    out_path = Path(out_path)
-    os.makedirs(out_path.parent, exist_ok=True)
     tiers = list(summaries_by_tier.keys())
     n = max(1, len(tiers))
     fig, axes = plt.subplots(1, n, figsize=(4.0 * n + 1.5, 5), sharey=True,
@@ -129,9 +117,7 @@ def render_combined_dotplot(
     axes[0][0].set_ylabel(metric.upper())
     fig.suptitle(f"All tiers — {metric.upper()} per stock")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
+    return save_figure(fig, out_path, dpi=200)
 
 
 __all__ = ["render_dotplot", "render_combined_dotplot"]

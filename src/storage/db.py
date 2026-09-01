@@ -8,8 +8,8 @@ Implements the storage layer described in
 - ``ticker_prices`` — one row per (symbol, ISO date) with the adjusted
   close price.
 
-The module deliberately keeps its surface small. It exposes only the
-five functions documented in the spec; everything else is private.
+The module deliberately keeps its surface small; everything not needed by a
+caller is private.
 
 Constraints (Phase A):
 - stdlib only (``sqlite3``, ``datetime``, ``os``) plus pandas / numpy
@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -230,6 +230,26 @@ def put_history(
 # ---------------------------------------------------------------------------
 # Listing
 # ---------------------------------------------------------------------------
+
+
+def get_mean_prices(
+    conn: sqlite3.Connection,
+    symbols: Optional[List[str]] = None,
+) -> Dict[str, float]:
+    """Return ``{symbol: mean_price}`` for cached symbols with a mean recorded.
+
+    ``put_history`` already computes and stores this, so reading it back costs
+    one query rather than re-loading every price series. Symbols with no cached
+    mean (an empty series was written) are omitted rather than reported as 0.0.
+    """
+    rows = conn.execute(
+        "SELECT symbol, mean_price FROM ticker_meta WHERE mean_price IS NOT NULL;"
+    ).fetchall()
+    out = {sym: float(px) for sym, px in rows}
+    if symbols is None:
+        return out
+    wanted = set(symbols)
+    return {k: v for k, v in out.items() if k in wanted}
 
 
 def list_cached_symbols(

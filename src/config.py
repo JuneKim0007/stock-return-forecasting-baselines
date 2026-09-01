@@ -122,11 +122,14 @@ ARMA_REFIT_EVERY: int = 40
 
 # ---------------------------------------------------------------------------
 # Output paths (relative to the project root)
+#
+# Each run materialises its own tree under ``TEST_RUN_ROOT`` above; these are
+# the module-level figure defaults, not that tree.
 # ---------------------------------------------------------------------------
 
-DATA_DIR: str = "data"
-RESULTS_DIR: str = "results"
-PREDICTIONS_DIR: str = "results/predictions"
+#: Default figure output. The runner overrides both per tier via
+#: :func:`src.plots.figure_dirs`, so these are only the fallback for a caller
+#: that does not scope its own.
 FIGURES_DIR: str = "results/figures"
 FIGURES_DATA_DIR: str = "results/figures/data"
 

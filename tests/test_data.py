@@ -4,14 +4,12 @@ classification, and the persisted manifest.
 
 from __future__ import annotations
 
-import os
 from typing import List
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from src.data import classify_tier, compute_log_returns
+from src.data import compute_log_returns
 
 
 # ---------------------------------------------------------------------------
@@ -47,31 +45,5 @@ def test_compute_log_returns_matches_formula() -> None:
     ]
     actual = out["log_return"].to_numpy(dtype=float)
     np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=0)
-
-
-# ---------------------------------------------------------------------------
-# classify_tier
-# ---------------------------------------------------------------------------
-
-
-def test_classify_tier() -> None:
-    """Verify tier classification at the canonical points.
-
-    The reference (per src/data.py): boundaries ``<= 10`` → tier1,
-    ``<= 100`` → tier2, otherwise tier3. Note that 10 → tier1 and
-    100 → tier2 here (inclusive upper edges); this is a deliberate Phase-1
-    convention and is documented in HANDOFF_PHASE_3.md.
-    """
-    # Core spec points.
-    assert classify_tier(5) == "tier1"
-    assert classify_tier(50) == "tier2"
-    assert classify_tier(150) == "tier3"
-
-    # Boundary points — match what src/data.py actually does.
-    assert classify_tier(10) == "tier1"  # boundary inclusive at upper edge
-    assert classify_tier(100) == "tier2"  # boundary inclusive at upper edge
-    # Just above the boundaries.
-    assert classify_tier(10.01) == "tier2"
-    assert classify_tier(100.01) == "tier3"
 
 

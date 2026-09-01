@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,10 +18,9 @@ from src.analysis.compute import compute_per_step, compute_summary
 from src.analysis.db import init_analysis_schema, open_analysis_db
 from src.analysis.dotplot import render_combined_dotplot, render_dotplot
 from src.analysis.persist import persist_per_step, persist_summary
+from src.evaluate import parse_prediction_filename
 
 logger = logging.getLogger(__name__)
-
-_PRED_RE = re.compile(r"^(?P<ticker>[A-Za-z0-9]+)_(?P<window>\d+)_(?P<model>[A-Za-z0-9]+)\.csv$")
 
 
 def _scan_tier_predictions(tier_dir: Path) -> List[Dict[str, Any]]:
@@ -32,15 +30,10 @@ def _scan_tier_predictions(tier_dir: Path) -> List[Dict[str, Any]]:
     if not pred_dir.is_dir():
         return out
     for path in sorted(pred_dir.iterdir()):
-        m = _PRED_RE.match(path.name)
-        if not m:
+        parsed = parse_prediction_filename(path.name)
+        if parsed is None:
             continue
-        out.append({
-            "path": path,
-            "ticker": m.group("ticker"),
-            "window": int(m.group("window")),
-            "model": m.group("model"),
-        })
+        out.append({"path": path, "ticker": parsed[0], "model": parsed[1]})
     return out
 
 
@@ -79,10 +72,9 @@ def analyse_test_run(test_root: Path, *, db_path: Optional[Path] = None) -> Path
                 continue
             stats = compute_summary(per_step)
             persist_per_step(conn, test_run, tier, r["ticker"],
-                             r["window"], r["model"], per_step)
+                             r["model"], per_step)
             entry = {
-                "tier": tier, "ticker": r["ticker"],
-                "window": r["window"], "model": r["model"],
+                "tier": tier, "ticker": r["ticker"], "model": r["model"],
                 **stats,
             }
             per_tier_summaries.append(entry)
@@ -92,7 +84,7 @@ def analyse_test_run(test_root: Path, *, db_path: Optional[Path] = None) -> Path
 
         if per_tier_summaries:
             df = pd.DataFrame(per_tier_summaries)[
-                ["ticker", "window", "model", "rmse", "mae"]
+                ["ticker", "model", "rmse", "mae"]
             ]
             summaries_by_tier[tier] = df
             analysis_dir = tier_dir / "analysis"

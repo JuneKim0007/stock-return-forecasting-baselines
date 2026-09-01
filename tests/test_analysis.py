@@ -14,6 +14,7 @@ from src.analysis.db import init_analysis_schema, open_analysis_db
 from src.analysis.dotplot import render_dotplot
 from src.analysis.persist import persist_summary
 from src.analysis.runner import analyse_test_run
+from tests.helpers import noisy_predictions, write_prediction_csv
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +28,7 @@ def test_compute_per_step_correct(tmp_path: Path) -> None:
         "y_true": [1.0, 2.0, 3.0, 4.0, 5.0],
         "y_pred": [1.5, 1.5, 3.0, 3.5, 4.0],
     })
-    csv = tmp_path / "AAA_60_naive.csv"
+    csv = tmp_path / "AAA_naive.csv"
     df.to_csv(csv, index=False)
 
     out = compute_per_step(csv)
@@ -70,7 +71,7 @@ def test_db_round_trip_summary(tmp_path: Path) -> None:
     init_analysis_schema(conn)
 
     row = {
-        "tier": "tier1", "ticker": "AAA", "window": 60, "model": "naive",
+        "tier": "tier1", "ticker": "AAA", "model": "naive",
         "n_steps": 100, "mse": 0.04, "rmse": 0.2, "mae": 0.18,
         "sq_err_var": 0.001, "sq_err_median": 0.01,
         "sq_err_max": 0.5, "sq_err_min": 0.0,
@@ -80,7 +81,7 @@ def test_db_round_trip_summary(tmp_path: Path) -> None:
     persist_summary(conn, "test_2026-05-08T00-00-00Z", [row])
 
     cur = conn.execute(
-        "SELECT tier, ticker, window, model, n_steps, rmse, mae "
+        "SELECT tier, ticker, model, n_steps, rmse, mae "
         "FROM analysis_summary WHERE test_run = ?",
         ("test_2026-05-08T00-00-00Z",),
     )
@@ -88,7 +89,7 @@ def test_db_round_trip_summary(tmp_path: Path) -> None:
     conn.close()
 
     assert len(fetched) == 1
-    assert fetched[0] == ("tier1", "AAA", 60, "naive", 100, 0.2, 0.18)
+    assert fetched[0] == ("tier1", "AAA", "naive", 100, 0.2, 0.18)
 
 
 # ---------------------------------------------------------------------------
@@ -99,8 +100,7 @@ def test_db_round_trip_summary(tmp_path: Path) -> None:
 def test_render_dotplot_writes_png_and_csv(tmp_path: Path) -> None:
     df = pd.DataFrame({
         "ticker": ["AAA", "BBB", "AAA", "BBB"],
-        "window": [60, 60, 60, 60],
-        "model": ["naive", "naive", "average", "average"],
+        "model": ["naive", "naive", "expanding", "expanding"],
         "rmse": [0.10, 0.12, 0.09, 0.13],
         "mae":  [0.08, 0.09, 0.07, 0.10],
     })
@@ -116,25 +116,14 @@ def test_render_dotplot_writes_png_and_csv(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _write_pred_csv(path: Path, n: int = 60, seed: int = 0) -> None:
-    rng = np.random.default_rng(seed)
-    y_true = rng.normal(0, 0.01, size=n)
-    y_pred = y_true + rng.normal(0, 0.005, size=n)
-    pd.DataFrame({
-        "idx": np.arange(60, 60 + n, dtype=int),
-        "y_true": y_true,
-        "y_pred": y_pred,
-    }).to_csv(path, index=False)
-
-
 def test_analyse_test_run_smoke(tmp_path: Path) -> None:
     test_x = tmp_path / "test_x"
     pred_dir = test_x / "tier1" / "predictions"
     pred_dir.mkdir(parents=True)
     for i, ticker in enumerate(["AAA", "BBB"]):
-        for j, model in enumerate(["naive", "average"]):
-            _write_pred_csv(pred_dir / f"{ticker}_60_{model}.csv",
-                            seed=10 * i + j)
+        for j, model in enumerate(["naive", "expanding"]):
+            write_prediction_csv(pred_dir / f"{ticker}_{model}.csv",
+                                 *noisy_predictions(seed=10 * i + j))
 
     db_path = analyse_test_run(test_x)
 

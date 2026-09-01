@@ -12,21 +12,12 @@ import math
 import numpy as np
 import pytest
 
+from tests.helpers import make_ar1
 from src.models import ARMAModel, default_models
 
 
-def _make_ar1(n: int = 200, phi: float = 0.5, sigma: float = 1.0,
-              seed: int = 42) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    eps = rng.normal(loc=0.0, scale=sigma, size=n)
-    y = np.zeros(n, dtype=float)
-    for t in range(1, n):
-        y[t] = phi * y[t - 1] + eps[t]
-    return y
-
-
 def test_smoke_all_models_predict_finite_floats() -> None:
-    y = _make_ar1(n=200, phi=0.5, sigma=1.0, seed=42)
+    y = make_ar1(n=200, phi=0.5, sigma=1.0, seed=42)
     window = y[:100]
 
     models = default_models()

@@ -3,7 +3,7 @@
 The new pipeline retires the unified rolling-window W. Each model declares
 its own ``lookback`` and ``kind`` attributes and the engine dispatches:
 
-* ``naive``     — ``y_full[t-1]``
+* ``naive``     — ``y_full[t-1]``, or NaN at ``t == 0``
 * ``global``    — ``mean(y_full)`` computed once before the loop
 * ``expanding`` — running mean of ``y_full[train_start : t]``
 * ``windowed``  — ``y_full[t - L : t]`` fed to ``fit`` + ``predict_one``
@@ -18,13 +18,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
-from src.models import (
-    ExpandingMeanModel,
-    Forecaster,
-    ForecasterProtocol,
-    GlobalMeanModel,
-    NaiveModel,
-)
+from src.models import ForecasterProtocol
 
 
 def run_eval(
@@ -72,16 +66,24 @@ def run_eval(
         for m in models:
             kind = getattr(m, "kind", "windowed")
             if kind == "naive":
-                preds[m.name][i] = float(y_full[t - 1])
+                # Guarded like the windowed branch below, and for the same
+                # reason: at t == 0 there is no prior observation. Without this,
+                # ``y_full[-1]`` silently resolves to the *last* value in the
+                # series — a look-ahead leak that would score as a perfect
+                # forecast of a future the model cannot have seen.
+                preds[m.name][i] = float(y_full[t - 1]) if t >= 1 else float("nan")
             elif kind == "global":
                 preds[m.name][i] = float(m.predict_one())
             elif kind == "expanding":
-                if isinstance(m, ExpandingMeanModel):
+                # A model that can take the running sum directly gets it: that
+                # keeps the expanding mean O(1) per step instead of re-reading
+                # the whole prefix. Asked structurally rather than by class, so
+                # this module keeps depending only on the forecaster interface.
+                if callable(getattr(m, "set_state", None)):
                     m.set_state(cum_sum, cum_n)
-                    preds[m.name][i] = float(m.predict_one())
                 else:
                     m.fit(y_full[train_start:t])
-                    preds[m.name][i] = float(m.predict_one())
+                preds[m.name][i] = float(m.predict_one())
             else:  # windowed
                 L = int(getattr(m, "lookback", 0))
                 if L <= 0 or t - L < 0:

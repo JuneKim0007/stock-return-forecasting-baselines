@@ -1,41 +1,22 @@
-"""Integration tests — Phase 3.
+"""Integration test: ARMA must be competitive on a series it should model well.
 
-These exercise a *minimal* in-test rolling loop (Phase 4 has not yet built
-``src/rolling.py`` — do NOT import from there). Two checks:
-
-1. On a synthetic AR(1) process, ARMA's RMSE must be at most 5 % worse than
-   Naive's. ARMA should be at least competitive on a true AR process.
-2. On a real ticker pulled from the manifest, a 30-step rolling forecast with
-   the trivial baselines must yield no NaNs and the right number of rows.
+Drives a minimal rolling loop in-test rather than through ``src.rolling``, so
+the assertion is about the model rather than the engine: on a synthetic AR(1)
+process, ARMA's RMSE must be within 5% of Naive's.
 """
 
 from __future__ import annotations
 
-import math
-import os
 
 import numpy as np
-import pandas as pd
-import pytest
 
+from tests.helpers import make_ar1
 from src.models import ARMAModel, NaiveModel
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_ar1(
-    n: int, phi: float = 0.6, sigma: float = 1.0, seed: int = 0
-) -> np.ndarray:
-    """Generate a length-``n`` AR(1) series ``y_t = phi*y_{t-1} + eps_t``."""
-    rng = np.random.default_rng(seed)
-    eps = rng.normal(loc=0.0, scale=sigma, size=n)
-    y = np.zeros(n, dtype=float)
-    for t in range(1, n):
-        y[t] = phi * y[t - 1] + eps[t]
-    return y
 
 
 def _rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -55,7 +36,7 @@ def test_rolling_arma_beats_naive_on_ar1() -> None:
     """
     n = 400
     window = 100
-    y = _make_ar1(n=n, phi=0.6, sigma=1.0, seed=0)
+    y = make_ar1(n=n, phi=0.6, sigma=1.0, seed=0)
 
     arma = ARMAModel()
     naive = NaiveModel()

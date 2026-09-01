@@ -1,12 +1,14 @@
-"""Phase 1 — Data Gathering & Identification.
+"""Price download, log returns, and the per-ticker load path.
 
 Functions
 ---------
 download_prices(ticker, start, end) -> DataFrame[date, adj_close]
 compute_log_returns(prices) -> DataFrame[date, adj_close, log_return]
-classify_tier(mean_price) -> {'tier1','tier2','tier3'}
-build_dataset(candidates, start, end, out_dir) -> manifest DataFrame
-load_returns(ticker, data_dir) -> DataFrame  (helper for later phases)
+concat_trading_days(df) -> DataFrame  (adds the integer trading-day index)
+load_returns(ticker, ...) -> DataFrame  (cache-first, used by the runner)
+
+Tier assignment is not here: ``src.selection`` decides it from the price bands
+in ``src.config.TIERS``, so there is one definition of where a tier begins.
 
 Conventions
 -----------
@@ -24,31 +26,13 @@ from __future__ import annotations
 import os
 import sqlite3
 import warnings
-from typing import Dict, List, Optional
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from statsmodels.tsa.stattools import adfuller
 
 from src.storage.db import get_history, put_history
-
-
-# ---------------------------------------------------------------------------
-# Tier classification
-# ---------------------------------------------------------------------------
-
-def classify_tier(mean_price: float) -> str:
-    """Return the price-tier label for a given mean Adj Close.
-
-    Tier 1: 0–10, Tier 2: 10–100, Tier 3: >100. Boundaries are inclusive at
-    the upper edge of tier 1 and tier 2 to keep classification deterministic.
-    """
-    if mean_price <= 10:
-        return "tier1"
-    if mean_price <= 100:
-        return "tier2"
-    return "tier3"
 
 
 # ---------------------------------------------------------------------------
@@ -189,116 +173,6 @@ def concat_trading_days(df: pd.DataFrame) -> pd.DataFrame:
     out = out.reset_index(drop=True)
     out["t"] = np.arange(len(out), dtype=int)
     return out
-
-
-# ---------------------------------------------------------------------------
-# Dataset orchestration
-# ---------------------------------------------------------------------------
-
-def _adf_pvalue(returns: np.ndarray) -> float:
-    """Run ADF on the returns; return p-value or NaN on failure."""
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            res = adfuller(returns, autolag="AIC")
-        return float(res[1])
-    except Exception:
-        return float("nan")
-
-
-def _write_ticker_csv(with_returns: pd.DataFrame, out_dir: str, ticker: str) -> None:
-    """Persist a per-ticker log-return CSV to ``out_dir/{ticker}.csv``.
-
-    Columns written: ``date`` (YYYY-MM-DD strings), ``adj_close``, ``log_return``.
-    This is the canonical on-disk format consumed by :func:`load_returns`.
-    """
-    csv_df = with_returns.copy()
-    csv_df["date"] = pd.to_datetime(csv_df["date"]).dt.strftime("%Y-%m-%d")
-    csv_df = csv_df[["date", "adj_close", "log_return"]]
-    csv_path = os.path.join(out_dir, f"{ticker}.csv")
-    csv_df.to_csv(csv_path, index=False)
-
-
-def build_dataset(
-    candidate_tickers: Dict[str, List[str]],
-    start: str,
-    end: str,
-    out_dir: str,
-) -> pd.DataFrame:
-    """Download and persist per-ticker CSVs; return a manifest DataFrame.
-
-    Parameters
-    ----------
-    candidate_tickers : {tier_label: [ticker, ...]}
-        Mapping of *proposed* tier label → list of candidate tickers.
-    start, end : str
-        ISO date strings passed to yfinance.
-    out_dir : str
-        Directory where ``{ticker}.csv`` files are written.
-
-    Manifest columns
-    ----------------
-    ticker, proposed_tier, actual_tier, mean_price, n_obs, start_date,
-    end_date, adf_pvalue, status
-    """
-    os.makedirs(out_dir, exist_ok=True)
-
-    rows: List[Dict] = []
-    for proposed_tier, tickers in candidate_tickers.items():
-        for ticker in tickers:
-            prices = download_prices(ticker, start, end)
-            if prices.empty:
-                rows.append({
-                    "ticker": ticker,
-                    "proposed_tier": proposed_tier,
-                    "actual_tier": None,
-                    "mean_price": float("nan"),
-                    "n_obs": 0,
-                    "start_date": None,
-                    "end_date": None,
-                    "adf_pvalue": float("nan"),
-                    "status": "dropped:download_failed",
-                })
-                continue
-
-            with_returns = compute_log_returns(prices)
-            n_obs = int(len(with_returns))
-            if n_obs < 100:
-                rows.append({
-                    "ticker": ticker,
-                    "proposed_tier": proposed_tier,
-                    "actual_tier": None,
-                    "mean_price": float(prices["adj_close"].mean()) if not prices.empty else float("nan"),
-                    "n_obs": n_obs,
-                    "start_date": str(with_returns["date"].iloc[0].date()) if n_obs else None,
-                    "end_date": str(with_returns["date"].iloc[-1].date()) if n_obs else None,
-                    "adf_pvalue": float("nan"),
-                    "status": "dropped:insufficient_observations",
-                })
-                continue
-
-            mean_price = float(with_returns["adj_close"].mean())
-            actual_tier = classify_tier(mean_price)
-            adf_p = _adf_pvalue(with_returns["log_return"].to_numpy())
-
-            # Persist per-ticker CSV.
-            _write_ticker_csv(with_returns, out_dir, ticker)
-
-            tier_mismatch = actual_tier != proposed_tier
-            rows.append({
-                "ticker": ticker,
-                "proposed_tier": proposed_tier,
-                "actual_tier": actual_tier,
-                "mean_price": mean_price,
-                "n_obs": n_obs,
-                "start_date": str(with_returns["date"].iloc[0].date()),
-                "end_date": str(with_returns["date"].iloc[-1].date()),
-                "adf_pvalue": adf_p,
-                "status": "ok:tier_mismatch" if tier_mismatch else "ok",
-            })
-
-    manifest = pd.DataFrame(rows)
-    return manifest
 
 
 # ---------------------------------------------------------------------------

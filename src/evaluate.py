@@ -10,46 +10,50 @@ writes per-model prediction CSVs, and returns one metric row per model.
 
 from __future__ import annotations
 
-import logging
 import os
-import sys
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from src.metrics import mae, rmse
-from src.models import ForecasterProtocol
+from src.logging_setup import get_logger
+from src.metrics import mae, n_scored, rmse
+from src.models import ENSEMBLE_CHILDREN, ENSEMBLE_NAME, ForecasterProtocol
 from src.models import default_models as _default_models
 from src.rolling import run_eval
 
 
-ENSEMBLE_NAME: str = "ensemble"
-#: Children that contribute to the post-hoc ensemble (excludes naive + global).
-ENSEMBLE_CHILDREN: Tuple[str, ...] = (
-    "expanding", "ma30", "ma60", "ma90", "arma60", "arma90",
-)
 
 # Empirical ARMA timing constants (seconds), used by the runner's cost gate.
 ARMA_FULL_SEARCH_LARGE_WINDOW_SECONDS: float = 1.6   # window >= 90
 ARMA_FULL_SEARCH_SMALL_WINDOW_SECONDS: float = 1.1   # window < 90
 ARMA_CACHED_REFIT_STEP_SECONDS: float = 0.005
 
+#: Prediction files are named ``<TICKER>_<MODEL>.csv``. The model name is the
+#: last underscore-separated field, so the ticker pattern is non-greedy — model
+#: names carry digits (``ma30``, ``arma60``) and a greedy split would swallow
+#: them. Written by :func:`prediction_filename`, read by
+#: :func:`parse_prediction_filename`; both readers of the predictions tree use
+#: the latter so the format is stated once.
+_PREDICTION_FILENAME = re.compile(
+    r"^(?P<ticker>[A-Za-z0-9]+?)_(?P<model>[A-Za-z0-9]+)\.csv$"
+)
 
-def _setup_logger(level: int = logging.INFO) -> logging.Logger:
-    logger = logging.getLogger("evaluate")
-    if logger.handlers:
-        return logger
-    logger.setLevel(level)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S",
-        )
-    )
-    logger.addHandler(handler)
-    logger.propagate = False
-    return logger
+
+def prediction_filename(ticker: str, model: str) -> str:
+    """Name of the CSV holding one (ticker, model) pair's predictions."""
+    return f"{ticker}_{model}.csv"
+
+
+def parse_prediction_filename(name: str) -> Optional[Tuple[str, str]]:
+    """Inverse of :func:`prediction_filename`; ``None`` if ``name`` is not one.
+
+    Returning ``None`` rather than raising lets a scanner skip stray files in
+    the predictions directory without a try/except at every call site.
+    """
+    m = _PREDICTION_FILENAME.match(name)
+    return (m.group("ticker"), m.group("model")) if m else None
 
 
 def _estimate_arma_cost(n_steps: int, window: int) -> float:
@@ -110,17 +114,31 @@ def run_one_ticker_eval(
 
     rows: List[Dict[str, Any]] = []
     for name, (yt, yp) in per_model.items():
+        try:
+            row_rmse, row_mae = rmse(yt, yp), mae(yt, yp)
+        except ValueError:
+            # Nothing finite to score — every forecast failed, or the model's
+            # lookback exceeds the history available before the test window.
+            # Emit no metric row (there is no metric), but say so: a silently
+            # absent model is how a misconfigured lookback stays invisible.
+            get_logger("evaluate").warning(
+                "[%s/%s] %s produced no scoreable forecast over %d test steps "
+                "— omitted from metrics", tier, ticker, name, int(yt.size),
+            )
+            continue
         rows.append({
             "tier": tier,
             "ticker": ticker,
             "model": name,
-            "rmse": rmse(yt, yp),
-            "mae": mae(yt, yp),
-            "n": int(yt.size),
+            "rmse": row_rmse,
+            "mae": row_mae,
+            "n": n_scored(yt, yp),
         })
         if predictions_dir is not None:
             os.makedirs(predictions_dir, exist_ok=True)
-            csv_path = os.path.join(predictions_dir, f"{ticker}_{name}.csv")
+            csv_path = os.path.join(
+                predictions_dir, prediction_filename(ticker, name),
+            )
             pd.DataFrame({
                 "idx": test_indices,
                 "y_true": yt.astype(float),
@@ -130,9 +148,10 @@ def run_one_ticker_eval(
 
 
 __all__ = [
+    "prediction_filename",
+    "parse_prediction_filename",
     "ENSEMBLE_NAME",
     "ENSEMBLE_CHILDREN",
     "run_one_ticker_eval",
     "_estimate_arma_cost",
-    "_setup_logger",
 ]

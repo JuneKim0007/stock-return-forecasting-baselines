@@ -188,13 +188,24 @@ excluded (trivial / derived / future-leaking) — we get:
 `expanding` wins **81 of 90 tickers**, `ma60` wins 8, `ma90` wins 1;
 `ma30`, `arma60`, and `arma90` win zero. The expanding-window mean is the
 single best causal forecaster on this slice, just barely separated from
-the longer-window moving averages.
+the longer-window moving averages. The winner doesn't change
+systematically with price tier — `expanding` dominates uniformly across
+small, medium, and large caps.
 
-**Best causal model vs. mean stock price**
+**Best-predictor error vs. price level**
 ![](./assets/img/best_predictor_vs_price.png)
 
-The winning forecaster doesn't change systematically with price tier —
-`expanding` dominates uniformly across small, medium, and large caps.
+Achievable error falls with price: fitting `log(RMSE)` on `log(mean Adj
+Close)` gives a slope of about **−0.23**, so a stock ten times dearer is
+forecastable to roughly `10^-0.23 ≈ 0.59×` the error. This is a statement
+about the *stocks*, not the models — cheaper stocks are simply more
+volatile in log-return terms.
+
+Which is the same thing the y-axis measures. Once a forecaster predicts
+the central tendency, its RMSE **is** the series' standard deviation, so
+"best-predictor error" and "realised volatility" are one quantity, not
+two. That identity is why the tier bands separate so cleanly here while
+telling us nothing about which model won.
 
 <br>
 <br>

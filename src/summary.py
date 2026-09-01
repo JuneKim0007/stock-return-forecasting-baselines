@@ -17,9 +17,8 @@ Reads the per-(ticker, model) prediction CSVs written by the runner under
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence
 
 import matplotlib
 
@@ -29,11 +28,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from src.metrics import mae as _mae, rmse as _rmse
-from src.plots import MODEL_COLORS, color_for
+from src.evaluate import parse_prediction_filename
+from src.metrics import mae as _mae, n_scored as _n_scored, rmse as _rmse
+from src.models import color_for, ordered_models
+from src.plots import save_figure, save_placeholder
 
-
-_PRED_RE = re.compile(r"^(?P<ticker>[A-Za-z0-9]+)_(?P<model>[A-Za-z0-9]+)\.csv$")
 
 #: Score-histogram exclusions: ``naive`` rarely wins, ``ensemble`` is a
 #: meta-model derived from the others, and ``global`` is the future-leaking
@@ -53,16 +52,15 @@ def _scan_predictions(pred_dir: Path) -> Dict[str, Dict[str, pd.DataFrame]]:
     if not pred_dir.is_dir():
         return out
     for path in sorted(pred_dir.iterdir()):
-        m = _PRED_RE.match(path.name)
-        if not m:
+        parsed = parse_prediction_filename(path.name)
+        if parsed is None:
             continue
-        ticker = m.group("ticker")
-        model = m.group("model")
         try:
             df = pd.read_csv(path)
         except Exception:
             continue
         if {"y_true", "y_pred"}.issubset(df.columns):
+            ticker, model = parsed
             out.setdefault(ticker, {})[model] = df
     return out
 
@@ -75,21 +73,26 @@ def _scan_predictions(pred_dir: Path) -> Dict[str, Dict[str, pd.DataFrame]]:
 def _per_ticker_metrics(
     by_ticker: Dict[str, Dict[str, pd.DataFrame]],
 ) -> pd.DataFrame:
-    """Return long-form: tier(unset), ticker, model, rmse, mae, n."""
+    """Return long-form: tier(unset), ticker, model, rmse, mae, n.
+
+    The nan policy lives in :mod:`src.metrics`; a model with nothing scoreable
+    raises there and is skipped rather than contributing an empty row.
+    """
     rows: List[Dict] = []
     for ticker, model_dict in by_ticker.items():
         for model, df in model_dict.items():
             yt = df["y_true"].to_numpy(dtype=float)
             yp = df["y_pred"].to_numpy(dtype=float)
-            mask = np.isfinite(yt) & np.isfinite(yp)
-            if not mask.any():
-                continue
+            try:
+                row_rmse, row_mae = _rmse(yt, yp), _mae(yt, yp)
+            except ValueError:
+                continue  # nothing finite to score for this model
             rows.append({
                 "ticker": ticker,
                 "model": model,
-                "rmse": _rmse(yt[mask], yp[mask]),
-                "mae": _mae(yt[mask], yp[mask]),
-                "n": int(mask.sum()),
+                "rmse": row_rmse,
+                "mae": row_mae,
+                "n": _n_scored(yt, yp),
             })
     return pd.DataFrame(rows)
 
@@ -125,16 +128,6 @@ def _model_summary(per_ticker: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def _ordered_models(models_present: Sequence[str]) -> List[str]:
-    """Stable model order: known model order first, then any extras alphabetically."""
-    canonical = ["naive", "global", "expanding", "ma30", "ma60", "ma90",
-                 "arma60", "arma90", "ensemble"]
-    seen = set(models_present)
-    ordered = [m for m in canonical if m in seen]
-    extras = sorted(seen - set(canonical))
-    return ordered + extras
-
-
 def _plot_summary_bars(
     summary: pd.DataFrame,
     *,
@@ -145,18 +138,10 @@ def _plot_summary_bars(
 
     Two subplots side by side: RMSE on the left, MAE on the right.
     """
-    out_path = Path(out_path)
-    os.makedirs(out_path.parent, exist_ok=True)
-
     if summary.empty:
-        fig, ax = plt.subplots(figsize=(6, 3))
-        ax.text(0.5, 0.5, "no data", ha="center", va="center")
-        ax.set_axis_off()
-        fig.savefig(out_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        return out_path
+        return save_placeholder(out_path)
 
-    models = _ordered_models(summary["model"].tolist())
+    models = ordered_models(summary["model"].tolist())
     summary = summary.set_index("model").reindex(models).reset_index()
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), sharey=False)
@@ -180,9 +165,7 @@ def _plot_summary_bars(
         ax.grid(True, axis="y", alpha=0.3)
     fig.suptitle(title)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
+    return save_figure(fig, out_path, dpi=150)
 
 
 def _plot_cumulative(
@@ -192,9 +175,6 @@ def _plot_cumulative(
     out_path: Path,
 ) -> Path:
     """Sum of squared errors across tickers, one line per model."""
-    out_path = Path(out_path)
-    os.makedirs(out_path.parent, exist_ok=True)
-
     cum_by_model: Dict[str, np.ndarray] = {}
     for ticker, model_dict in by_ticker.items():
         for model, df in model_dict.items():
@@ -211,15 +191,10 @@ def _plot_cumulative(
             cum_by_model[model][:n] += sq[:n]
 
     if not cum_by_model:
-        fig, ax = plt.subplots(figsize=(6, 3))
-        ax.text(0.5, 0.5, "no data", ha="center", va="center")
-        ax.set_axis_off()
-        fig.savefig(out_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        return out_path
+        return save_placeholder(out_path)
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    for model in _ordered_models(list(cum_by_model.keys())):
+    for model in ordered_models(list(cum_by_model.keys())):
         cum = np.cumsum(cum_by_model[model])
         ax.plot(np.arange(cum.size), cum,
                 color=color_for(model), linewidth=1.4, label=model,
@@ -230,9 +205,7 @@ def _plot_cumulative(
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
+    return save_figure(fig, out_path, dpi=150)
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +216,7 @@ def _plot_cumulative(
 def _score_histogram(
     per_ticker: pd.DataFrame,
     *,
-    exclude: Sequence[str] = ("naive", "ensemble", "global"),
+    exclude: Iterable[str] = _HISTOGRAM_EXCLUDE,
 ) -> pd.DataFrame:
     """Return ``model, wins`` ranked by wins descending, after dropping
     excluded models from candidate pool."""
@@ -264,27 +237,115 @@ def _plot_score_histogram(
     out_path: Path,
     title: str = "Score histogram (excluding naive, global, ensemble)",
 ) -> Path:
-    out_path = Path(out_path)
-    os.makedirs(out_path.parent, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(8, 4.5))
     if hist.empty:
-        ax.text(0.5, 0.5, "no data", ha="center", va="center")
-        ax.set_axis_off()
-    else:
-        models = hist["model"].tolist()
-        wins = hist["wins"].to_numpy(dtype=int)
-        x = np.arange(len(models))
-        colors = [color_for(m) for m in models]
-        ax.bar(x, wins, color=colors, edgecolor="black", linewidth=0.4)
-        ax.set_xticks(x)
-        ax.set_xticklabels(models, rotation=20, fontsize=9)
-        ax.set_ylabel("# tickers won")
-        ax.set_title(title)
-        ax.grid(True, axis="y", alpha=0.3)
+        return save_placeholder(out_path)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    models = hist["model"].tolist()
+    x = np.arange(len(models))
+    ax.bar(x, hist["wins"].to_numpy(dtype=int),
+           color=[color_for(m) for m in models],
+           edgecolor="black", linewidth=0.4)
+    ax.set_xticks(x)
+    ax.set_xticklabels(models, rotation=20, fontsize=9)
+    ax.set_ylabel("# tickers won")
+    ax.set_title(title)
+    ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
+    return save_figure(fig, out_path, dpi=150)
+
+
+# ---------------------------------------------------------------------------
+# Best-model error vs. price level
+# ---------------------------------------------------------------------------
+
+
+def _best_causal_rmse(per_ticker: pd.DataFrame) -> pd.DataFrame:
+    """Lowest RMSE per ticker among the causal candidates.
+
+    Uses the same exclusions as the score histogram: ``naive`` is the trivial
+    benchmark, ``global`` peeks at the test set, and ``ensemble`` is derived
+    from the others — none is a candidate for "the best forecaster available".
+    """
+    if per_ticker.empty:
+        return pd.DataFrame(columns=["ticker", "model", "rmse"])
+    candidates = per_ticker[~per_ticker["model"].isin(_HISTOGRAM_EXCLUDE)]
+    if candidates.empty:
+        return pd.DataFrame(columns=["ticker", "model", "rmse"])
+    best = candidates.loc[candidates.groupby("ticker")["rmse"].idxmin()]
+    return best[["ticker", "model", "rmse"]].reset_index(drop=True)
+
+
+def _loglog_slope(x: np.ndarray, y: np.ndarray) -> Optional[float]:
+    """OLS slope of ``log10(y)`` on ``log10(x)``, or ``None`` if undefined.
+
+    A slope here is a power-law exponent: ``rmse ~ price ** slope``.
+    """
+    ok = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+    if ok.sum() < 2:
+        return None
+    return float(np.polyfit(np.log10(x[ok]), np.log10(y[ok]), 1)[0])
+
+
+def _plot_error_vs_price(
+    best: pd.DataFrame,
+    prices: pd.DataFrame,
+    *,
+    out_path: Path,
+) -> Path:
+    """Best-model RMSE against mean adjusted close, log-log, coloured by tier.
+
+    One panel, deliberately. An earlier hand-made version of this figure drew
+    RMSE and realised volatility side by side, but for a central-tendency
+    forecaster those are the same quantity: predicting the mean makes the
+    root-mean-squared error the sample standard deviation, so the second panel
+    restated the first. The identity is stated in the axis label instead.
+    """
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    best = best.assign(ticker=best["ticker"].astype(str))
+    prices = prices.assign(ticker=prices["ticker"].astype(str))
+    merged = best.merge(prices, on="ticker", how="inner")
+    merged = merged[np.isfinite(merged["mean_price"]) & (merged["mean_price"] > 0)]
+
+    if merged.empty:
+        plt.close(fig)
+        return save_placeholder(out_path, dpi=200)
+
+    tier_palette = ["#2ca02c", "#ff7f0e", "#1f77b4"]
+    for i, tier in enumerate(sorted(merged["tier"].unique())):
+        sub = merged[merged["tier"] == tier]
+        ax.scatter(
+            sub["mean_price"], sub["rmse"],
+            color=tier_palette[i % len(tier_palette)], s=34, alpha=0.85,
+            edgecolor="black", linewidth=0.4, label=str(tier), zorder=2,
+        )
+
+    x = merged["mean_price"].to_numpy(dtype=float)
+    y = merged["rmse"].to_numpy(dtype=float)
+    slope = _loglog_slope(x, y)
+    if slope is not None:
+        intercept = float(
+            np.mean(np.log10(y)) - slope * np.mean(np.log10(x))
+        )
+        xs = np.linspace(np.log10(x.min()), np.log10(x.max()), 50)
+        ax.plot(
+            10 ** xs, 10 ** (intercept + slope * xs),
+            color="black", linestyle="--", linewidth=1.6,
+            label=f"fit: slope = {slope:.2f}", zorder=3,
+        )
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("mean Adj Close ($, log scale)")
+    ax.set_ylabel("best causal model RMSE = realised volatility (log scale)")
+    title = "Best-predictor error vs. price level (log-log)"
+    if slope is not None:
+        title += f" — slope {slope:.2f}"
+    ax.set_title(title)
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(frameon=True)
+    fig.tight_layout()
+    return save_figure(fig, out_path, dpi=200)
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +384,30 @@ def summarise_tier(
     return written
 
 
+def _read_ticker_prices(test_root: Path) -> pd.DataFrame:
+    """Return ``tier, ticker, mean_price`` from a run's ``ticker_tested.csv``.
+
+    Returns an empty frame when the file is missing or predates the
+    ``mean_price`` column, so a caller can skip the price figure rather than
+    fail the whole summary over a derived artifact.
+    """
+    path = Path(test_root) / "ticker_tested.csv"
+    if not path.is_file():
+        return pd.DataFrame(columns=["tier", "ticker", "mean_price"])
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame(columns=["tier", "ticker", "mean_price"])
+    if not {"tier", "ticker", "mean_price"}.issubset(df.columns):
+        return pd.DataFrame(columns=["tier", "ticker", "mean_price"])
+    out = df[["tier", "ticker", "mean_price"]].dropna(subset=["mean_price"]).copy()
+    # Symbols come back from CSV as int64 when they happen to look numeric, and
+    # as str everywhere they are parsed out of a filename. Normalise here so the
+    # join below cannot fail on dtype.
+    out["ticker"] = out["ticker"].astype(str)
+    return out
+
+
 def summarise_overall(test_root: Path, tiers: Sequence[str]) -> List[str]:
     """Cross-tier summary at ``<test_root>/analysis/``."""
     test_root = Path(test_root)
@@ -354,13 +439,29 @@ def summarise_overall(test_root: Path, tiers: Sequence[str]) -> List[str]:
         out_path=out_dir / "summary_overall.png",
     )))
 
-    hist = _score_histogram(per_ticker, exclude=("naive", "ensemble", "global"))
+    hist = _score_histogram(per_ticker)
     hist_csv = out_dir / "score_histogram.csv"
     hist.to_csv(hist_csv, index=False)
     written.append(str(hist_csv))
     written.append(str(_plot_score_histogram(
         hist, out_path=out_dir / "score_histogram.png",
     )))
+
+    # Error against price level. Needs the per-ticker mean price the runner
+    # recorded in ticker_tested.csv; if that file is absent (an older run tree,
+    # or summarise_overall called directly), the figure is simply skipped —
+    # every other output above is already written by this point.
+    prices = _read_ticker_prices(test_root)
+    if not prices.empty:
+        best = _best_causal_rmse(per_ticker)
+        # per_ticker keys tickers as "<tier>/<TICKER>" across tiers; split it
+        # back so the rows can be matched against ticker_tested.csv.
+        if not best.empty:
+            split = best["ticker"].str.split("/", n=1, expand=True)
+            best = best.assign(ticker=split[1].fillna(split[0]))
+        written.append(str(_plot_error_vs_price(
+            best, prices, out_path=out_dir / "best_predictor_vs_price.png",
+        )))
     return written
 
 

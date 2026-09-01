@@ -1,4 +1,10 @@
-"""Pure-pandas error-distribution statistics for the analysis stage."""
+"""Error-distribution statistics for the analysis stage.
+
+``rmse`` and ``mae`` come from :mod:`src.metrics` so this stage reports the same
+numbers as ``metrics.csv`` and ``summary_<tier>.csv``. The distribution stats
+around them (variance, median, extremes) are computed here over the same finite
+subset the metrics use.
+"""
 
 from __future__ import annotations
 
@@ -14,17 +20,23 @@ def compute_per_step(predictions_csv: Path) -> pd.DataFrame:
     with ``step_idx``, ``sq_err``, ``abs_err``. ``step_idx`` is the row order
     (0..N-1), independent of the absolute ``idx`` written by the rolling
     backtest.
+
+    Steps whose forecast or observation is not finite are dropped, matching the
+    nan policy in :mod:`src.metrics`; ``step_idx`` is assigned before the drop
+    so it still identifies the original position in the series.
     """
     df = pd.read_csv(predictions_csv)
-    err = df["y_true"].astype(float) - df["y_pred"].astype(float)
+    yt = df["y_true"].to_numpy(dtype=float)
+    yp = df["y_pred"].to_numpy(dtype=float)
+    err = yt - yp
     out = pd.DataFrame(
         {
             "step_idx": np.arange(len(df), dtype=int),
-            "sq_err": (err * err).to_numpy(dtype=float),
-            "abs_err": err.abs().to_numpy(dtype=float),
+            "sq_err": err * err,
+            "abs_err": np.abs(err),
         }
     )
-    return out
+    return out[np.isfinite(yt) & np.isfinite(yp)].reset_index(drop=True)
 
 
 def compute_summary(per_step: pd.DataFrame) -> Dict[str, Any]:
@@ -35,6 +47,8 @@ def compute_summary(per_step: pd.DataFrame) -> Dict[str, Any]:
     ab = per_step["abs_err"].to_numpy(dtype=float)
     n = int(sq.size)
     mse = float(sq.mean()) if n else float("nan")
+    # ``compute_per_step`` has already dropped the non-finite steps, so the
+    # mean of sq_err here is the same quantity ``src.metrics.rmse`` squares.
     return {
         "n_steps": n,
         "mse": mse,
