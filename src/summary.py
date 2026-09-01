@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 import matplotlib
 
@@ -283,6 +283,107 @@ def _plot_score_histogram(
 
 
 # ---------------------------------------------------------------------------
+# Best-model error vs. price level
+# ---------------------------------------------------------------------------
+
+
+def _best_causal_rmse(per_ticker: pd.DataFrame) -> pd.DataFrame:
+    """Lowest RMSE per ticker among the causal candidates.
+
+    Uses the same exclusions as the score histogram: ``naive`` is the trivial
+    benchmark, ``global`` peeks at the test set, and ``ensemble`` is derived
+    from the others — none is a candidate for "the best forecaster available".
+    """
+    if per_ticker.empty:
+        return pd.DataFrame(columns=["ticker", "model", "rmse"])
+    candidates = per_ticker[~per_ticker["model"].isin(_HISTOGRAM_EXCLUDE)]
+    if candidates.empty:
+        return pd.DataFrame(columns=["ticker", "model", "rmse"])
+    best = candidates.loc[candidates.groupby("ticker")["rmse"].idxmin()]
+    return best[["ticker", "model", "rmse"]].reset_index(drop=True)
+
+
+def _loglog_slope(x: np.ndarray, y: np.ndarray) -> Optional[float]:
+    """OLS slope of ``log10(y)`` on ``log10(x)``, or ``None`` if undefined.
+
+    A slope here is a power-law exponent: ``rmse ~ price ** slope``.
+    """
+    ok = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+    if ok.sum() < 2:
+        return None
+    return float(np.polyfit(np.log10(x[ok]), np.log10(y[ok]), 1)[0])
+
+
+def _plot_error_vs_price(
+    best: pd.DataFrame,
+    prices: pd.DataFrame,
+    *,
+    out_path: Path,
+) -> Path:
+    """Best-model RMSE against mean adjusted close, log-log, coloured by tier.
+
+    One panel, deliberately. An earlier hand-made version of this figure drew
+    RMSE and realised volatility side by side, but for a central-tendency
+    forecaster those are the same quantity: predicting the mean makes the
+    root-mean-squared error the sample standard deviation, so the second panel
+    restated the first. The identity is stated in the axis label instead.
+    """
+    out_path = Path(out_path)
+    os.makedirs(out_path.parent, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    best = best.assign(ticker=best["ticker"].astype(str))
+    prices = prices.assign(ticker=prices["ticker"].astype(str))
+    merged = best.merge(prices, on="ticker", how="inner")
+    merged = merged[np.isfinite(merged["mean_price"]) & (merged["mean_price"] > 0)]
+
+    if merged.empty:
+        ax.text(0.5, 0.5, "no data", ha="center", va="center")
+        ax.set_axis_off()
+        fig.savefig(out_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        return out_path
+
+    tier_palette = ["#2ca02c", "#ff7f0e", "#1f77b4"]
+    for i, tier in enumerate(sorted(merged["tier"].unique())):
+        sub = merged[merged["tier"] == tier]
+        ax.scatter(
+            sub["mean_price"], sub["rmse"],
+            color=tier_palette[i % len(tier_palette)], s=34, alpha=0.85,
+            edgecolor="black", linewidth=0.4, label=str(tier), zorder=2,
+        )
+
+    x = merged["mean_price"].to_numpy(dtype=float)
+    y = merged["rmse"].to_numpy(dtype=float)
+    slope = _loglog_slope(x, y)
+    if slope is not None:
+        intercept = float(
+            np.mean(np.log10(y)) - slope * np.mean(np.log10(x))
+        )
+        xs = np.linspace(np.log10(x.min()), np.log10(x.max()), 50)
+        ax.plot(
+            10 ** xs, 10 ** (intercept + slope * xs),
+            color="black", linestyle="--", linewidth=1.6,
+            label=f"fit: slope = {slope:.2f}", zorder=3,
+        )
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("mean Adj Close ($, log scale)")
+    ax.set_ylabel("best causal model RMSE = realised volatility (log scale)")
+    title = "Best-predictor error vs. price level (log-log)"
+    if slope is not None:
+        title += f" — slope {slope:.2f}"
+    ax.set_title(title)
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(frameon=True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Public API — runner integration
 # ---------------------------------------------------------------------------
 
@@ -316,6 +417,30 @@ def summarise_tier(
         out_path=out_dir / f"summary_{tier}.png",
     )))
     return written
+
+
+def _read_ticker_prices(test_root: Path) -> pd.DataFrame:
+    """Return ``tier, ticker, mean_price`` from a run's ``ticker_tested.csv``.
+
+    Returns an empty frame when the file is missing or predates the
+    ``mean_price`` column, so a caller can skip the price figure rather than
+    fail the whole summary over a derived artifact.
+    """
+    path = Path(test_root) / "ticker_tested.csv"
+    if not path.is_file():
+        return pd.DataFrame(columns=["tier", "ticker", "mean_price"])
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame(columns=["tier", "ticker", "mean_price"])
+    if not {"tier", "ticker", "mean_price"}.issubset(df.columns):
+        return pd.DataFrame(columns=["tier", "ticker", "mean_price"])
+    out = df[["tier", "ticker", "mean_price"]].dropna(subset=["mean_price"]).copy()
+    # Symbols come back from CSV as int64 when they happen to look numeric, and
+    # as str everywhere they are parsed out of a filename. Normalise here so the
+    # join below cannot fail on dtype.
+    out["ticker"] = out["ticker"].astype(str)
+    return out
 
 
 def summarise_overall(test_root: Path, tiers: Sequence[str]) -> List[str]:
@@ -356,6 +481,22 @@ def summarise_overall(test_root: Path, tiers: Sequence[str]) -> List[str]:
     written.append(str(_plot_score_histogram(
         hist, out_path=out_dir / "score_histogram.png",
     )))
+
+    # Error against price level. Needs the per-ticker mean price the runner
+    # recorded in ticker_tested.csv; if that file is absent (an older run tree,
+    # or summarise_overall called directly), the figure is simply skipped —
+    # every other output above is already written by this point.
+    prices = _read_ticker_prices(test_root)
+    if not prices.empty:
+        best = _best_causal_rmse(per_ticker)
+        # per_ticker keys tickers as "<tier>/<TICKER>" across tiers; split it
+        # back so the rows can be matched against ticker_tested.csv.
+        if not best.empty:
+            split = best["ticker"].str.split("/", n=1, expand=True)
+            best = best.assign(ticker=split[1].fillna(split[0]))
+        written.append(str(_plot_error_vs_price(
+            best, prices, out_path=out_dir / "best_predictor_vs_price.png",
+        )))
     return written
 
 

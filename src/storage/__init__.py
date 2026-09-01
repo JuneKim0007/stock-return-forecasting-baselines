@@ -8,6 +8,7 @@ from .db import (
     init_schema,
     get_history,
     put_history,
+    get_mean_prices,
     list_cached_symbols,
 )
 
@@ -16,5 +17,6 @@ __all__ = [
     "init_schema",
     "get_history",
     "put_history",
+    "get_mean_prices",
     "list_cached_symbols",
 ]

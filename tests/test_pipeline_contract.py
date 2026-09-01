@@ -82,7 +82,7 @@ def test_metrics_csv_has_no_window_column() -> None:
             root,
             [{"tier": "tier1", "ticker": "AAA", "model": "naive",
               "rmse": 0.1, "mae": 0.08, "n": 60}],
-            [{"tier": "tier1", "ticker": "AAA"}],
+            [{"tier": "tier1", "ticker": "AAA", "mean_price": 15.0}],
         )
         cols = list(pd.read_csv(root / "metrics.csv").columns)
     assert cols == ["tier", "ticker", "model", "rmse", "mae", "n"]

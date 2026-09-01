@@ -49,7 +49,7 @@ from src.models import ForecasterProtocol  # noqa: E402
 from src.plots import _PER_PAIR_FIGURE_REGISTRY, figure_dirs  # noqa: E402
 from src.selection import TierSpec, select_tickers_for_tier  # noqa: E402
 from src.logging_setup import get_logger  # noqa: E402
-from src.storage.db import init_schema, open_db  # noqa: E402
+from src.storage.db import get_mean_prices, init_schema, open_db  # noqa: E402
 
 # Hard refusal threshold — if the projected ARMA cost across all selected
 # (ticker, window) pairs exceeds this many seconds and ``--force`` was not
@@ -353,12 +353,14 @@ def _backtest_tier(
 def _write_run_tables(
     test_root: Path,
     all_rows: List[Dict[str, Any]],
-    ticker_rows: List[Dict[str, str]],
+    ticker_rows: List[Dict[str, Any]],
 ) -> None:
     """Write ``metrics.csv`` and ``ticker_tested.csv``.
 
     Both are written even when empty so a failed run still produces a tree with
-    the expected shape rather than a missing file.
+    the expected shape rather than a missing file. ``ticker_tested.csv`` carries
+    ``mean_price`` so the summary stage can relate error to price level without
+    reopening the ticker cache.
     """
     metrics_cols = ["tier", "ticker", "model", "rmse", "mae", "n"]
     metrics = (
@@ -367,9 +369,11 @@ def _write_run_tables(
     )
     metrics.to_csv(test_root / "metrics.csv", index=False)
 
+    ticker_cols = ["tier", "ticker", "mean_price"]
     tt = (
-        pd.DataFrame(ticker_rows).sort_values(["tier", "ticker"]).reset_index(drop=True)
-        if ticker_rows else pd.DataFrame(columns=["tier", "ticker"])
+        pd.DataFrame(ticker_rows)[ticker_cols]
+        .sort_values(["tier", "ticker"]).reset_index(drop=True)
+        if ticker_rows else pd.DataFrame(columns=ticker_cols)
     )
     tt.to_csv(test_root / "ticker_tested.csv", index=False)
 
@@ -478,11 +482,20 @@ def run_test(
         active_tier_names, per_tier_selected, logger, force=force,
     )
 
+    # Mean adjusted close per selected ticker, read from the cache the
+    # selector already populated. Carried into ticker_tested.csv so the
+    # summary stage can plot error against price level.
+    all_selected = [t for names in per_tier_selected.values() for t in names]
+    mean_prices = get_mean_prices(conn, all_selected)
+
     all_rows: List[Dict[str, Any]] = []
-    ticker_rows: List[Dict[str, str]] = []
+    ticker_rows: List[Dict[str, Any]] = []
     for tname in active_tier_names:
         selected = per_tier_selected[tname]
-        ticker_rows.extend({"tier": tname, "ticker": t} for t in selected)
+        ticker_rows.extend(
+            {"tier": tname, "ticker": t, "mean_price": mean_prices.get(t)}
+            for t in selected
+        )
         all_rows.extend(_backtest_tier(
             tname, tier_dirs[tname], selected, test_root, conn, logger,
             models_factory=models_factory, refresh=refresh_cache,

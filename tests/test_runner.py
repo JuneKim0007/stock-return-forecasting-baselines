@@ -152,8 +152,12 @@ def test_run_test_smoke_tier1_only(tiny_setup, monkeypatch):
     tt_path = test_root / "ticker_tested.csv"
     assert tt_path.exists()
     tt = pd.read_csv(tt_path)
-    assert list(tt.columns) == ["tier", "ticker"]
+    assert list(tt.columns) == ["tier", "ticker", "mean_price"]
     assert len(tt) == 2
+    # mean_price is read back from the cache the selector populated, and is
+    # what lets the summary stage relate error to price level.
+    assert tt["mean_price"].notna().all()
+    assert (tt["mean_price"] > 0).all()
 
     # manifest.json — keys (new schema, no windows column).
     mf_path = test_root / "manifest.json"

@@ -1,9 +1,8 @@
 # Refactor backlog
 
 Surveyed 2026-08-31 · scope `src/` · 20 files
-Baseline: tests 89 green · `src/` 3,821 lines
-Previous: 90 · 81 · 64 · 46 · 39 (the drop is one test deleted with the dead
-code it covered; its contract moved to the live scanner)
+Baseline: tests 103 green · `src/` 3,997 lines
+Previous: 89 · 90 · 81 · 64 · 46 · 39
 
 R1–R8 closed. Defects 1, 2, 3, 5 and a newly-found Defect 6 fixed 2026-09-01.
 R9 re-evaluated with its blocker cleared and **refused**; R10 dropped as a
@@ -135,6 +134,36 @@ work.
 
 Proved by golden-tree diff: the runner's full output, all 73 entries, is
 byte-identical before and after.
+
+### F1 · Unreproducible README figure · assets/img/best_predictor_vs_price.png
+closed 2026-09-01 — not a backlog smell but a reproducibility gap found while
+closing R13: the README publishes this figure as a result and nothing in `src/`
+produced it. Every other README figure traces to `src/summary.py`.
+
+Two problems, both fixed. **No generator:** added
+`summary._plot_error_vs_price`, wired into `summarise_overall`, plus the
+plumbing it needs — `storage.get_mean_prices` reads back the mean the cache
+already stores, and the runner carries it into `ticker_tested.csv`, so the
+summary stage gains no database dependency. Verified end to end: a run over 17
+synthetic tickers with a planted `price ** -0.23` scaling recovers a slope of
+−0.21.
+
+**The caption described a different figure.** It read *"Best causal model vs.
+mean stock price"* and claimed the figure shows `expanding` winning uniformly
+across tiers. That claim is true but shown by the score histogram above it; the
+figure plots error magnitude against price. Caption rewritten to describe what
+is drawn; the winner claim moved up to the histogram that supports it.
+
+The published figure drew RMSE and volatility as two side-by-side panels with
+identical points and identical slopes. That is not a plotting bug: predicting
+the central tendency makes RMSE the sample standard deviation, verified equal to
+machine precision, so the panels were one quantity drawn twice. The generator
+draws one panel and states the identity on the axis label.
+
+A dtype fragility surfaced during the end-to-end check and not in the unit
+tests, whose tickers were all alphabetic: a numeric-looking symbol is read from
+CSV as `int64` but parsed from a filename as `str`, so the join failed. Both
+sides are now normalised, with a regression test.
 
 ---
 
@@ -325,12 +354,6 @@ the runner's test window always starts after the warm-up and `t` is never 0.
 Pinned in `test_naive_at_index_zero_wraps_to_the_end_of_the_series` so it cannot
 change silently. The guard is one line; deciding what the forecast *should* be
 at `t = 0` (NaN, most likely) is the part that needs a call.
-
-**`assets/img/best_predictor_vs_price.png` has no generator.** The README
-embeds it as a result (§4-3, "Best causal model vs. mean stock price"), but
-nothing in `src/` produces it — it was made outside the repo. Every other README
-figure traces to `src/summary.py`. Either add the generator or drop the figure;
-a published result the repo cannot reproduce is the weakest kind.
 
 **`metrics.csv` is write-only.** The runner produces it and nothing in the
 pipeline reads it back — `summary` and `analysis` both work from the prediction
