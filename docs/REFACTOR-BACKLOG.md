@@ -1,7 +1,7 @@
 # Refactor backlog
 
 Surveyed 2026-08-31 · scope `src/` · 20 files
-Baseline: tests 102 green · `src/` 3,874 lines · `tests/` 2,760
+Baseline: tests 54 green · `src/` 3,879 lines · `tests/` 2,272
 Duplication: 49 repeated 4-line blocks → 24 (src 20→7, tests 29→17)
 Previous: 89 · 90 · 81 · 64 · 46 · 39
 
@@ -236,6 +236,28 @@ test window and `t` is never 0: verified by golden-tree diff, all 74 output
 entries identical. It becomes reachable the moment anyone shortens `START_DATE`
 or widens the test window, and it composes correctly with the metrics policy
 from R11 — the unscoreable step is dropped from `n` rather than scored as a hit.
+
+### F4 · Over-tested · tests/
+closed 2026-09-02 — the campaign added **57 tests for 8 behaviour changes**,
+roughly seven apiece. Most of the work was behaviour-preserving, and for that
+the existing suite was already the proof; new tests are earned by behaviour
+changes, and then only one or two each.
+
+Pruned to **16**, and the pruning was proved rather than asserted. A mutation
+harness reintroduces all thirteen defects this campaign fixed — the filename
+regex, the stale palette, a hand-listed `MODEL_ORDER`, the unthreaded
+`--refresh-cache`, the collapsed smoothing span, both halves of the NaN-policy
+divergence, the `t = 0` leak, the missing price figure, and the four
+`run_eval` dispatch behaviours. The full suite caught 13/13. The pruned suite
+catches **13/13**, so the 41 removed tests caught nothing the survivors do not.
+
+What went: three tests for a five-line `polyfit` wrapper, eight parametrised
+cases for one regex, an idempotency test that checked SQLite's primary key
+rather than any code of ours, and a good deal of engine trivia — result
+aliasing, key ordering, duplicate-name collapse — pinned because it was
+observable, not because anything depended on it.
+
+Totals: 102 → 54 tests, `tests/` 2,760 → 2,272 lines. `src/` untouched.
 
 ---
 

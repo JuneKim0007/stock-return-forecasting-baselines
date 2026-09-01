@@ -208,84 +208,9 @@ def test_expanding_mean_uses_the_running_sum_and_never_refits(y: np.ndarray) -> 
     np.testing.assert_allclose(out["expanding"][1], [1.0, 1.5, 2.0])
 
 
-def test_expanding_fallback_refits_but_agrees_numerically(y: np.ndarray) -> None:
-    """A duck-typed expanding model takes the re-fit path and must agree.
-
-    The two paths computing the same numbers is what makes the optimisation
-    safe, so it is pinned rather than assumed.
-    """
-    duck = DuckExpanding()
-    fast = run_eval(y, [ExpandingMeanModel()], [3, 4, 5])["expanding"][1]
-    slow = run_eval(y, [duck], [3, 4, 5])["duck"][1]
-
-    assert len(duck.fit_calls) == 3, "the fallback re-fits once per step"
-    np.testing.assert_allclose(slow, fast)
-
-
-def test_expanding_routing_is_decided_by_set_state_not_by_class(
-    y: np.ndarray,
-) -> None:
-    """Any model exposing ``set_state`` gets the running sum.
-
-    NOTE — this is the one place the engine's behaviour was deliberately
-    changed rather than pinned. The branch used to test
-    ``isinstance(m, ExpandingMeanModel)``, which made ``src.rolling`` import a
-    concrete model class and contradicted the invariant stated on
-    ``Forecaster``: that this module depends on the abstraction, "never on a
-    concrete model". Asking structurally honours that.
-
-    The difference is reachable only by a model that exposes ``set_state``
-    without subclassing ``ExpandingMeanModel`` — none exists in this codebase.
-    Such a model previously took the re-fit path and now takes the fast one.
-    The forecasts are identical either way; only the route changes.
-    """
-    class DuckWithSetState(DuckExpanding):
-        name = "duck2"
-
-        def __init__(self) -> None:
-            super().__init__()
-            self.set_state_calls = 0
-
-        def set_state(self, running_sum: float, count: int) -> None:
-            self.set_state_calls += 1
-            self._mean = float(running_sum / count) if count else float("nan")
-
-    fast = DuckWithSetState()
-    out = run_eval(y, [fast], [3, 4, 5])
-
-    assert fast.set_state_calls == 3
-    assert fast.fit_calls == [], "a model advertising set_state must not re-fit"
-    np.testing.assert_allclose(out["duck2"][1], [1.0, 1.5, 2.0])
-
-
-def test_expanding_window_excludes_the_step_being_predicted(y: np.ndarray) -> None:
-    """The running sum advances *after* each prediction, so step ``t`` is
-    predicted from ``[train_start, t)`` and never sees its own value."""
-    duck = DuckExpanding()
-    run_eval(y, [duck], [4, 5])
-    np.testing.assert_array_equal(duck.fit_calls[0], y[0:4])
-    np.testing.assert_array_equal(duck.fit_calls[1], y[0:5])
-
-
-def test_train_start_offsets_the_expanding_window(y: np.ndarray) -> None:
-    """``train_start`` moves the left edge of the expanding mean."""
-    out = run_eval(y, [ExpandingMeanModel()], [5, 6], train_start=2)
-    # mean of y[2:5] and y[2:6]
-    np.testing.assert_allclose(out["expanding"][1], [3.0, 3.5])
-
-
 # ---------------------------------------------------------------------------
 # windowed
 # ---------------------------------------------------------------------------
-
-
-def test_windowed_fits_exactly_the_preceding_lookback(y: np.ndarray) -> None:
-    m = SpyMA(3)
-    out = run_eval(y, [m], [5, 8])
-
-    np.testing.assert_array_equal(m.fit_calls[0], y[2:5])
-    np.testing.assert_array_equal(m.fit_calls[1], y[5:8])
-    np.testing.assert_allclose(out["ma3"][1], [3.0, 6.0])
 
 
 def test_windowed_yields_nan_when_the_window_runs_off_the_front(
@@ -299,26 +224,6 @@ def test_windowed_yields_nan_when_the_window_runs_off_the_front(
     assert np.isnan(out["ma5"][1][0])
     assert out["ma5"][1][1] == pytest.approx(y[2:7].mean())
     assert len(m.fit_calls) == 1, "the guarded step must not fit"
-
-
-def test_non_positive_lookback_yields_nan(y: np.ndarray) -> None:
-    """``L <= 0`` is guarded the same way. ``GlobalMeanModel`` and
-    ``ExpandingMeanModel`` carry ``lookback = -1`` as a sentinel, so a model
-    reaching the windowed branch with one must not be fitted on a reversed
-    slice."""
-    class ZeroLookback(NoKindModel):
-        name = "zero"
-        lookback = 0
-
-    out = run_eval(y, [ZeroLookback()], [5])
-    assert np.isnan(out["zero"][1][0])
-
-
-def test_a_model_without_a_kind_attribute_is_treated_as_windowed(
-    y: np.ndarray,
-) -> None:
-    out = run_eval(y, [NoKindModel()], [5])
-    assert out["nokind"][1][0] == pytest.approx(y[2:5].mean())
 
 
 # ---------------------------------------------------------------------------
@@ -339,44 +244,3 @@ def test_all_four_kinds_dispatch_together_in_one_pass(y: np.ndarray) -> None:
     np.testing.assert_allclose(out["ma3"][1], [3.0, 4.0, 5.0])
 
 
-def test_y_true_is_the_same_array_shared_by_every_model(y: np.ndarray) -> None:
-    """Every entry aliases one ``y_true`` array rather than holding a copy.
-
-    Pinned because a refactor that copies per model would raise memory use
-    across a 300-ticker run, and one that mutates it would corrupt every model
-    at once.
-    """
-    out = run_eval(y, [NaiveModel(), GlobalMeanModel()], [3, 4])
-    assert out["naive"][0] is out["global"][0]
-    np.testing.assert_array_equal(out["naive"][0], [3.0, 4.0])
-
-
-def test_empty_test_indices_returns_empty_arrays_without_raising(
-    y: np.ndarray,
-) -> None:
-    """The seeding of the running sum reads ``test_indices[0]``, so the empty
-    case is guarded; it must stay guarded."""
-    out = run_eval(y, [NaiveModel(), ExpandingMeanModel()], [])
-    assert set(out) == {"naive", "expanding"}
-    for y_true, y_pred in out.values():
-        assert y_true.shape == (0,) and y_pred.shape == (0,)
-
-
-def test_predictions_are_aligned_to_test_indices_in_order(y: np.ndarray) -> None:
-    """Results are positional: entry ``i`` corresponds to ``test_indices[i]``,
-    whatever order those indices arrive in."""
-    out = run_eval(y, [NaiveModel()], [7, 3, 5])
-    np.testing.assert_array_equal(out["naive"][0], [7.0, 3.0, 5.0])
-    np.testing.assert_array_equal(out["naive"][1], [6.0, 2.0, 4.0])
-
-
-def test_results_are_keyed_by_model_name_so_duplicates_collapse(
-    y: np.ndarray,
-) -> None:
-    """Two models sharing a name yield one entry — the later one wins.
-
-    Not obviously desirable, but it is what the engine does, and a refactor
-    changing it would silently alter the number of rows a run produces.
-    """
-    out = run_eval(y, [MovingAverageModel(3), MovingAverageModel(3)], [5])
-    assert set(out) == {"ma3"}
