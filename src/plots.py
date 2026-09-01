@@ -24,11 +24,9 @@ table at the end listing every artifact written.
 
 from __future__ import annotations
 
-import glob
 import os
-import re
 from contextlib import contextmanager
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Callable, Dict, Iterator, List, Tuple
 
 import matplotlib
 
@@ -65,28 +63,20 @@ ACTUAL_VS_PRED_TAIL: int = 200
 #: as a follow-up rather than folded into a bug fix.
 _NOMINAL_WINDOW: int = 0
 
-#: Prediction filenames as ``src.evaluate`` writes them: ``<TICKER>_<MODEL>.csv``.
-#: The model name is the last underscore-separated field, so the ticker pattern
-#: is non-greedy — model names carry digits (``ma30``, ``arma60``) and a greedy
-#: split would swallow them.
-_PREDICTION_FILENAME = re.compile(
-    r"^(?P<ticker>[A-Za-z0-9]+?)_(?P<model>[A-Za-z0-9]+)\.csv$"
-)
-
 __all__ = [
-    # Constants
+    # Re-exported from src.models so figure code has one import
     "MODEL_ORDER",
     "MODEL_COLORS",
-    # I/O helpers
+    "color_for",
+    "ordered_models",
+    # Figure-writing primitives
     "ensure_dirs",
     "save_fig_and_data",
     "figure_dirs",
-    # Discovery
-    "discover_predictions",
-    "ordered_models",
-    "color_for",
-    # Top-level orchestration
-    "render_all",
+    # The per-pair figures themselves
+    "plot_cumulative_error",
+    "plot_rolling_error",
+    "plot_actual_vs_pred",
 ]
 
 
@@ -150,29 +140,6 @@ def figure_dirs(figures_dir: str, figures_data_dir: str) -> Iterator[None]:
 
 # ---------------------------------------------------------------------------
 # Discovery
-# ---------------------------------------------------------------------------
-
-
-def discover_predictions(
-    predictions_dir: str = config.PREDICTIONS_DIR,
-) -> Dict[str, Dict[str, pd.DataFrame]]:
-    """Return a nested mapping ``ticker -> {model: df}``.
-
-    ``df`` has columns ``[idx, y_true, y_pred]`` exactly as the runner writes
-    them. Filenames that do not match are skipped silently, so stray files in
-    the directory are harmless.
-    """
-    out: Dict[str, Dict[str, pd.DataFrame]] = {}
-    for path in sorted(glob.glob(os.path.join(predictions_dir, "*.csv"))):
-        m = _PREDICTION_FILENAME.match(os.path.basename(path))
-        if not m:
-            continue
-        out.setdefault(m.group("ticker"), {})[m.group("model")] = pd.read_csv(path)
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Per-(ticker, window) figures
 # ---------------------------------------------------------------------------
 
 
@@ -350,98 +317,6 @@ def plot_actual_vs_pred(
 # ---------------------------------------------------------------------------
 
 
-def _load_metrics(path: Optional[str] = None) -> pd.DataFrame:
-    """Load the metrics CSV and apply stable model ordering.
-
-    Parameters
-    ----------
-    path : str, optional
-        Explicit path to ``metrics.csv``. Defaults to
-        ``config.RESULTS_DIR/metrics.csv`` when omitted. Accepting a path
-        argument removes the side-effect dependency on ``config.RESULTS_DIR``
-        so callers (tests, alternate pipelines) can point at any file.
-    """
-    if path is None:
-        path = os.path.join(config.RESULTS_DIR, "metrics.csv")
-    df = pd.read_csv(path)
-    # Stable model ordering for plotting.
-    df["model"] = pd.Categorical(df["model"], categories=list(MODEL_ORDER), ordered=True)
-    return df.sort_values(["tier", "model"]).reset_index(drop=True)
-
-
-def plot_metric_by_model_tier(metric: str, metrics: Optional[pd.DataFrame] = None) -> List[str]:
-    """Bar chart of ``metric`` (``rmse`` or ``mae``) per model, one panel per tier.
-
-    Each model carries its own lookback now, so there is no window axis to
-    facet on: the layout is a single row of tiers. Values are averaged across
-    the tickers in a tier, since ``metrics.csv`` is per (tier, ticker, model).
-    """
-    if metrics is None:
-        metrics = _load_metrics()
-    tiers = sorted(metrics["tier"].unique())
-    n_cols = max(1, len(tiers))
-    fig, axes = plt.subplots(
-        1, n_cols, figsize=(4.0 * n_cols + 2, 4.2), squeeze=False, sharey=True,
-    )
-
-    for c, tier in enumerate(tiers):
-        ax = axes[0][c]
-        sub = metrics[metrics["tier"] == tier]
-        means = sub.groupby("model", observed=True)[metric].mean().reset_index()
-        means = means.sort_values("model")
-        ax.bar(
-            means["model"].astype(str), means[metric],
-            color=[color_for(m) for m in means["model"]],
-        )
-        ax.set_title(str(tier))
-        ax.set_ylabel(f"mean {metric.upper()}" if c == 0 else "")
-        ax.grid(True, axis="y", alpha=0.3)
-        ax.tick_params(axis="x", rotation=30)
-
-    fig.suptitle(f"Mean {metric.upper()} by model (one panel per tier)", y=1.02)
-    fig.tight_layout()
-
-    base = f"{metric}_by_model_tier"
-    return save_fig_and_data(fig, metrics, base)
-
-
-def plot_ensemble_vs_best(tier: str, metrics: pd.DataFrame) -> List[str]:
-    """Compare the ensemble against the best single model within one tier.
-
-    Both are tier-level means across tickers, so the comparison answers "does
-    averaging the models beat the best one" rather than comparing two rows that
-    happen to belong to different tickers.
-    """
-    sub = metrics[metrics["tier"] == tier]
-    if sub.empty:
-        return []
-
-    means = (
-        sub.groupby("model", observed=True)[["rmse", "mae"]].mean().reset_index()
-    )
-    ensemble_row = means[means["model"] == "ensemble"]
-    others = means[means["model"] != "ensemble"].sort_values("rmse")
-    if ensemble_row.empty or others.empty:
-        return []
-
-    best_row = others.iloc[[0]]
-    plot_df = pd.concat([ensemble_row, best_row], ignore_index=True)
-    plot_df.insert(0, "tier", tier)
-
-    fig, ax = plt.subplots(figsize=(6, 5))
-    colors = [color_for(m) for m in plot_df["model"]]
-    ax.bar(plot_df["model"].astype(str), plot_df["rmse"], color=colors)
-    for i, val in enumerate(plot_df["rmse"]):
-        ax.text(i, val, f"{val:.4f}", ha="center", va="bottom", fontsize=9)
-    ax.set_title(f"Ensemble vs best single model — {tier}")
-    ax.set_ylabel("mean RMSE")
-    ax.grid(True, axis="y", alpha=0.3)
-    fig.tight_layout()
-
-    base = f"ensemble_vs_best_{tier}"
-    return save_fig_and_data(fig, plot_df, base)
-
-
 # ---------------------------------------------------------------------------
 # Figure-type registry
 # ---------------------------------------------------------------------------
@@ -469,89 +344,3 @@ _PER_PAIR_FIGURE_REGISTRY: Dict[str, PerPairRenderer] = {
     ),
     "actual_vs_pred": plot_actual_vs_pred,
 }
-
-
-# Aggregate (cross-tier) figure renderers keyed by metric name.
-#
-# Each value is a zero-argument callable that returns a list of file paths.
-# They are rebuilt inside render_all once the metrics frame is available.
-# This dict is not pre-populated at import time because the renderers need
-# the live metrics frame; render_all constructs fresh callables per run.
-_AGGREGATE_METRICS: Tuple[str, ...] = ("rmse", "mae")
-
-
-# ---------------------------------------------------------------------------
-# Top-level orchestration
-# ---------------------------------------------------------------------------
-
-
-def render_all() -> List[Tuple[str, str]]:
-    """Render every figure and return a list of (basename, kind) entries.
-
-    Per-pair figures are driven by :data:`_PER_PAIR_FIGURE_REGISTRY`;
-    aggregate metric figures iterate :data:`_AGGREGATE_METRICS`.
-    """
-    artifacts: List[Tuple[str, str]] = []
-
-    # 1) Per-ticker figures — dispatch through the registry.
-    discovered = discover_predictions()
-    for ticker, model_dict in sorted(discovered.items()):
-        if not model_dict:
-            continue
-        for renderer in _PER_PAIR_FIGURE_REGISTRY.values():
-            for p in renderer(model_dict, ticker, _NOMINAL_WINDOW):
-                artifacts.append((os.path.basename(p), "per-pair"))
-
-    # 2) Cross-tier metric figures.
-    try:
-        metrics = _load_metrics()
-    except FileNotFoundError:
-        metrics = pd.DataFrame()
-
-    if not metrics.empty:
-        for metric in _AGGREGATE_METRICS:
-            for p in plot_metric_by_model_tier(metric, metrics):
-                artifacts.append((os.path.basename(p), "aggregate"))
-
-        for tier in sorted(metrics["tier"].unique()):
-            for p in plot_ensemble_vs_best(tier, metrics):
-                artifacts.append((os.path.basename(p), "ensemble-vs-best"))
-
-    return artifacts
-
-
-def _summarize(artifacts: Iterable[Tuple[str, str]]) -> None:
-    rows = list(artifacts)
-    if not rows:
-        print("[plots] no artifacts written.")
-        return
-    by_kind: Dict[str, int] = {}
-    for _, kind in rows:
-        by_kind[kind] = by_kind.get(kind, 0) + 1
-    png = sum(1 for n, _ in rows if n.endswith(".png"))
-    svg = sum(1 for n, _ in rows if n.endswith(".svg"))
-    csv = sum(1 for n, _ in rows if n.endswith(".csv"))
-
-    print()
-    print("=== plots: summary ===")
-    print(f"figures dir : {os.path.abspath(config.FIGURES_DIR)}")
-    print(f"data dir    : {os.path.abspath(config.FIGURES_DATA_DIR)}")
-    print(f"PNG written : {png}")
-    print(f"SVG written : {svg}")
-    print(f"CSV written : {csv}")
-    print(f"by kind     : {by_kind}")
-    print()
-    print("artifact".ljust(60), "kind")
-    print("-" * 80)
-    for name, kind in rows:
-        print(name.ljust(60), kind)
-
-
-def main() -> None:
-    ensure_dirs()
-    artifacts = render_all()
-    _summarize(artifacts)
-
-
-if __name__ == "__main__":
-    main()

@@ -23,7 +23,7 @@ import pytest
 from src.analysis.runner import analyse_test_run
 from src.evaluate import run_one_ticker_eval
 from src.models import MODEL_ORDER, NaiveModel
-from src.plots import _load_metrics, discover_predictions
+from src.summary import _scan_predictions
 
 
 # ---------------------------------------------------------------------------
@@ -144,33 +144,23 @@ def test_analysis_stage_is_idempotent(tmp_path: Path) -> None:
     assert (n_sum, n_step) == (1, 60)
 
 
-def test_discover_predictions_finds_pipeline_output(tmp_path: Path) -> None:
-    """``discover_predictions`` returned ``{}`` for every real run before the fix."""
+def test_prediction_scan_finds_pipeline_output(tmp_path: Path) -> None:
+    """The scanner must match what the pipeline writes.
+
+    Two scanners used to exist — ``summary._scan_predictions`` (live) and
+    ``plots.discover_predictions`` (reachable only from a CLI whose input
+    directory nothing populated). The dead one is gone; this covers the
+    survivor.
+    """
     for model in ("naive", "ma30"):
         _write_pred_csv(tmp_path / f"AAA_{model}.csv")
     _write_pred_csv(tmp_path / "BBB_naive.csv")
 
-    found = discover_predictions(str(tmp_path))
+    found = _scan_predictions(tmp_path)
 
     assert set(found) == {"AAA", "BBB"}
     assert set(found["AAA"]) == {"naive", "ma30"}
     assert list(found["AAA"]["naive"].columns) == ["idx", "y_true", "y_pred"]
-
-
-def test_load_metrics_reads_the_runner_schema(tmp_path: Path) -> None:
-    """``_load_metrics`` raised ``KeyError: 'window'`` on every real metrics.csv,
-    which crashed ``python -m src.plots`` outright."""
-    path = tmp_path / "metrics.csv"
-    pd.DataFrame([
-        {"tier": "tier1", "ticker": "AAA", "model": "ma30",
-         "rmse": 0.09, "mae": 0.07, "n": 250},
-        {"tier": "tier1", "ticker": "AAA", "model": "naive",
-         "rmse": 0.10, "mae": 0.08, "n": 250},
-    ]).to_csv(path, index=False)
-
-    out = _load_metrics(str(path))
-
-    assert list(out["model"]) == ["naive", "ma30"], "not in canonical model order"
 
 
 def test_unknown_prediction_filenames_are_ignored(tmp_path: Path) -> None:
@@ -180,7 +170,7 @@ def test_unknown_prediction_filenames_are_ignored(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("ignore me")
     (tmp_path / "AAA_60_naive.csv").write_text("legacy,shape\n1,2\n")
 
-    found = discover_predictions(str(tmp_path))
+    found = _scan_predictions(tmp_path)
     assert set(found) == {"AAA"}
     assert set(found["AAA"]) == {"naive"}
 
@@ -230,7 +220,7 @@ def test_every_model_name_survives_a_filename_round_trip(
     mis-splits on them would silently drop those models from every figure.
     """
     _write_pred_csv(tmp_path / f"AAA_{model}.csv")
-    found = discover_predictions(str(tmp_path))
+    found = _scan_predictions(tmp_path)
     assert set(found["AAA"]) == {model}
 
 

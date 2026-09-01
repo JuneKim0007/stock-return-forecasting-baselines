@@ -1,12 +1,13 @@
 # Refactor backlog
 
 Surveyed 2026-08-31 · scope `src/` · 20 files
-Baseline: tests 90 green
-Previous: 81 · 64 · 46 · 39
+Baseline: tests 89 green · `src/` 3,821 lines
+Previous: 90 · 81 · 64 · 46 · 39 (the drop is one test deleted with the dead
+code it covered; its contract moved to the live scanner)
 
 R1–R8 closed. Defects 1, 2, 3, 5 and a newly-found Defect 6 fixed 2026-09-01.
 R9 re-evaluated with its blocker cleared and **refused**; R10 dropped as a
-consequence. R11 closed. R12–R14 remain open; R15 dropped.
+consequence. R11 and R13 closed; R12 and R14 dropped with reasons. **Nothing remains open.**
 
 **The organising fact.** The pipeline was migrated from a unified rolling window
 `W` to per-model lookbacks. `src/evaluate.py` was migrated; its readers were not.
@@ -15,38 +16,7 @@ Most findings here are that migration's debt, and the five defects in
 
 ## Open
 
-### R12 · Inappropriate intimacy · plots.py:123 · figure_dirs
-status   open — no remedy decided
-evidence Context manager mutates `src.config.FIGURES_DIR` / `FIGURES_DATA_DIR`
-         module globals and restores them in `finally`. Its own docstring justifies
-         this: *"The pipeline runs tier-by-tier sequentially in a single process, so
-         this scoped mutation is safe."*
-remedy   undecided. The docstring is evidence the shape is **deliberate** — a
-         recorded constraint, not an oversight. Threading an output directory
-         through every renderer is the alternative, and it is more code. Left open
-         rather than dropped only because that constraint is undefended: nothing
-         fails if the pipeline is ever parallelised.
-first seen 2026-08-31
-
-### R13 · Divergent change · plots.py (552 lines, was 699)
-status   open — no remedy decided
-evidence Two jobs remain with different reasons to change: per-pair figure
-         renderers (consumed by `runner`) and a standalone legacy CLI
-         (`render_all`, `main`) that is currently broken — see Defects 2 and 3.
-         R5 removed the third (palette/ordering) by moving it to `src.models`.
-remedy   Extract Class, but the split depends on what survives the defect fixes
-blocked  Defects 2 & 3
-first seen 2026-08-31
-
-### R14 · Long parameter list · selection.py:207, data.py:331, storage/db.py:148
-status   open — no remedy decided
-evidence `select_tickers_for_tier` 10 params / 117 lines · `load_returns` 8 / 92 ·
-         `put_history` 7 / 80. `(period_start, period_end)` travels as a pair
-         through 19 sites across three modules.
-remedy   candidate: Introduce Parameter Object for the date-window pair. Not decided
-         — `select_tickers_for_tier`'s length is mostly injected test seams
-         (`history_loader`, `current_price_fn`), which are doing their job.
-first seen 2026-08-31
+_(nothing open — see Done, Dropped and Refused below.)_
 
 ---
 
@@ -133,6 +103,39 @@ steps for all 18 (ticker, model) pairs with no NaN, and `metrics.csv` now
 provably agrees with `summary_tier1.csv`. Mutation-checked: removing the mask
 fails 6 tests.
 
+### R13 · Divergent change · plots.py
+closed 2026-09-01 — the finding was right that the file had more than one job,
+but wrong about the remedy. Investigating it showed the second job was not
+merely separable, it was **dead**: the standalone CLI read
+`results/predictions/` and `results/metrics.csv`, the layout the pipeline
+abandoned when it moved to `results/test_runs/test_<ts>/`. Verified on a fresh
+clone — `python -m src.plots` exits 0 and reports "no artifacts written". A
+third casualty of the same migration as Defects 1–3, one level further out.
+
+So Extract Class was the wrong tool; deletion was right. Removed `render_all`,
+`main`, `_summarize`, `plot_metric_by_model_tier`, `plot_ensemble_vs_best`,
+`_load_metrics`, `discover_predictions`, `_PREDICTION_FILENAME` and
+`_AGGREGATE_METRICS` — 211 lines. `plots.py` 557 → 346, nine functions, one
+job: the per-(ticker, model) figures the runner drives.
+
+Nothing was lost with it. `plot_metric_by_model_tier` duplicated
+`summary._plot_summary_bars`, which is strictly better (it adds min/max error
+bars). `plot_ensemble_vs_best` answered a question `summary_overall.csv` and
+`score_histogram.png` already answer, and which the README reports from those.
+`discover_predictions` was the dead twin of the live
+`summary._scan_predictions` — an unrecorded duplication this closes. The dead
+config constants went too: `DATA_DIR` (zero readers), `RESULTS_DIR` and
+`PREDICTIONS_DIR` (read only by the deleted half).
+
+**This partly reverses the previous commit.** Defects 2 and 3 fixed
+`discover_predictions` and `_load_metrics`, which are now deleted. Those were
+real bugs and the fixes were correct, but the prior question — does this code
+have a job at all — went unasked. Fixing it first was wasted work, not wrong
+work.
+
+Proved by golden-tree diff: the runner's full output, all 73 entries, is
+byte-identical before and after.
+
 ---
 
 ## Dropped
@@ -149,6 +152,46 @@ What was reachable has been taken: the branch no longer names a concrete class,
 so the engine depends on the interface even where it does not use it uniformly.
 The characterisation tests pin the bypass explicitly, making it documented
 behaviour rather than a surprise. Re-open only alongside R9.
+
+### R12 · Inappropriate intimacy · plots.py · figure_dirs
+dropped 2026-09-01 — the evidence supports the current design. The context
+manager mutates `config.FIGURES_DIR` / `FIGURES_DATA_DIR` and restores them in
+`finally`, and its own docstring records why that is safe: *"The pipeline runs
+tier-by-tier sequentially in a single process."* That is a stated constraint,
+not an oversight, and it is currently true.
+
+The alternative — threading an output directory through `save_fig_and_data` and
+the three renderers — would change the registry contract
+`(model_dict, ticker, window)` that `src.runner` drives, to remove a mutation
+that is scoped, restored on exception, and covered by
+`tests/test_plots_figure_dirs.py`. More churn than the finding is worth.
+
+Caveat recorded rather than acted on: nothing *enforces* the single-process
+constraint. If the pipeline is ever parallelised across tiers, this breaks
+silently and figures land in the wrong tier's directory. Re-open then, not
+before.
+
+### R14 · Long parameter list · selection.py, data.py, storage/db.py
+dropped 2026-09-01 — the counts are inflated by optional arguments, and the
+evidence supports the current design.
+
+`select_tickers_for_tier` reads as 10 parameters but is **4 required plus
+`seed`** at its one production call site; the other five (`max_attempts`,
+`history_loader`, `current_price_fn`, `period_start`, `period_end`) are
+injected seams with working defaults, used by the ten tests that keep this
+module off the network. That is dependency injection doing its job — the exact
+shape `check-safety-refactoring` lists as a smell that is really an answer.
+`load_returns` is the same pattern: 8 parameters, called as
+`load_returns(ticker, conn=conn, refresh=refresh)`.
+
+`put_history`'s seven are the columns of the record it writes; wrapping them in
+an object used at one call site adds a class and removes nothing.
+
+The one sub-finding with real substance — `(period_start, period_end)` travelling
+as a pair through 19 sites — still fails the test for Introduce Parameter Object:
+the pair is only ever passed through. No behaviour attaches to it as a unit, so
+the object would have no methods and would exist to shorten signatures that are
+not the problem.
 
 ### R15 · Data clumps · src/analysis/ · (test_run, tier, ticker, window, model)
 dropped 2026-08-31 — the clump is real (16 sites, `persist_per_step` takes 7
@@ -282,6 +325,17 @@ the runner's test window always starts after the warm-up and `t` is never 0.
 Pinned in `test_naive_at_index_zero_wraps_to_the_end_of_the_series` so it cannot
 change silently. The guard is one line; deciding what the forecast *should* be
 at `t = 0` (NaN, most likely) is the part that needs a call.
+
+**`assets/img/best_predictor_vs_price.png` has no generator.** The README
+embeds it as a result (§4-3, "Best causal model vs. mean stock price"), but
+nothing in `src/` produces it — it was made outside the repo. Every other README
+figure traces to `src/summary.py`. Either add the generator or drop the figure;
+a published result the repo cannot reproduce is the weakest kind.
+
+**`metrics.csv` is write-only.** The runner produces it and nothing in the
+pipeline reads it back — `summary` and `analysis` both work from the prediction
+CSVs. That is legitimate for a deliverable, and is noted only so the next
+reader does not go looking for the consumer.
 
 **The nominal `window` argument on per-pair renderers.** The five registered
 renderers still take a `window` they use only for the figure title and
