@@ -218,6 +218,25 @@ the goal.
 Proved behaviour-preserving by golden-tree diff, all 74 entries including every
 figure's byte size.
 
+### F3 · Look-ahead leak in the naive branch · rolling.py
+closed 2026-09-02 — the engine evaluated `y_full[t - 1]` unguarded, and numpy
+resolves `y_full[-1]` to the *last* element of the series. At `t = 0` the
+forecast for the first observation was therefore the final one: a look-ahead
+leak that scores as a perfect prediction of a future the model cannot have seen.
+
+Found while writing the characterisation tests (F-series above) and pinned there
+rather than fixed, because pinning is what made the fix safe to make afterwards.
+
+The fix needed no new policy. `run_eval`'s windowed branch already answers the
+same question — not enough history — with NaN, at `t - L < 0`. The naive branch
+now answers it the same way, so one condition has one answer.
+
+Unreachable under the shipped config, where 100 warm-up trading days precede the
+test window and `t` is never 0: verified by golden-tree diff, all 74 output
+entries identical. It becomes reachable the moment anyone shortens `START_DATE`
+or widens the test window, and it composes correctly with the metrics policy
+from R11 — the unscoreable step is dropped from `n` rather than scored as a hit.
+
 ---
 
 ## Dropped
@@ -399,14 +418,8 @@ per-pair figure kinds, up from 3.
 cannot be regenerated without a full pipeline run against yfinance. Until then
 the README figures disagree with what the code now produces.
 
-**The `naive` branch leaks at `t = 0`.** Found while writing the
-characterisation tests. The engine evaluates `y_full[t - 1]`; at `t = 0` numpy
-resolves `y_full[-1]` to the *last* element of the series, so the forecast for
-the first observation is the final one. It does not fire in production because
-the runner's test window always starts after the warm-up and `t` is never 0.
-Pinned in `test_naive_at_index_zero_wraps_to_the_end_of_the_series` so it cannot
-change silently. The guard is one line; deciding what the forecast *should* be
-at `t = 0` (NaN, most likely) is the part that needs a call.
+**`assets/img/*.png` still predate the palette fix.** See above — the ten
+committed figures need a live yfinance run to regenerate.
 
 **`metrics.csv` is write-only.** The runner produces it and nothing in the
 pipeline reads it back — `summary` and `analysis` both work from the prediction

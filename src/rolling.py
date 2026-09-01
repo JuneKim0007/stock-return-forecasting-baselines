@@ -3,7 +3,7 @@
 The new pipeline retires the unified rolling-window W. Each model declares
 its own ``lookback`` and ``kind`` attributes and the engine dispatches:
 
-* ``naive``     — ``y_full[t-1]``
+* ``naive``     — ``y_full[t-1]``, or NaN at ``t == 0``
 * ``global``    — ``mean(y_full)`` computed once before the loop
 * ``expanding`` — running mean of ``y_full[train_start : t]``
 * ``windowed``  — ``y_full[t - L : t]`` fed to ``fit`` + ``predict_one``
@@ -66,7 +66,12 @@ def run_eval(
         for m in models:
             kind = getattr(m, "kind", "windowed")
             if kind == "naive":
-                preds[m.name][i] = float(y_full[t - 1])
+                # Guarded like the windowed branch below, and for the same
+                # reason: at t == 0 there is no prior observation. Without this,
+                # ``y_full[-1]`` silently resolves to the *last* value in the
+                # series — a look-ahead leak that would score as a perfect
+                # forecast of a future the model cannot have seen.
+                preds[m.name][i] = float(y_full[t - 1]) if t >= 1 else float("nan")
             elif kind == "global":
                 preds[m.name][i] = float(m.predict_one())
             elif kind == "expanding":

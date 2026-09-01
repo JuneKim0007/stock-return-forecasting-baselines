@@ -7,9 +7,9 @@ running-sum path and the short-lookback guard were executed by nothing.
 
 That is a prerequisite for touching the ``kind`` dispatch (backlog R9/R10), so
 every assertion here was derived by running the current engine and recording
-its answer — including the behaviour marked below as a latent bug, which is
-pinned deliberately so a refactor cannot change it silently. Fixing it is a
-separate decision from preserving it.
+its answer. One of them recorded a latent bug rather than intended behaviour —
+the ``t = 0`` look-ahead leak in the naive branch — and pinning it is what made
+the fix safe to make later; that test now asserts the fixed behaviour.
 
 The engine's contract, as observed:
 
@@ -146,18 +146,23 @@ def test_naive_reads_the_series_directly_and_never_fits(y: np.ndarray) -> None:
     assert m.predict_calls == 0
 
 
-def test_naive_at_index_zero_wraps_to_the_end_of_the_series(y: np.ndarray) -> None:
-    """LATENT BUG, pinned deliberately — not an endorsement.
+def test_naive_at_index_zero_is_nan_not_the_last_observation(y: np.ndarray) -> None:
+    """At ``t = 0`` there is no prior observation, so there is no forecast.
 
-    At ``t=0`` the engine evaluates ``y_full[-1]``, which numpy resolves to the
-    *last* element, so the forecast for the first observation is the final one:
-    a clean look-ahead leak. It does not fire in production because the runner's
-    test window always starts well after the warm-up period, so ``t`` is never
-    0. Recorded here so a refactor cannot alter it unnoticed; whether to fix it
-    is a separate decision (see docs/REFACTOR-BACKLOG.md).
+    This pinned a bug until it was fixed: the engine evaluated ``y_full[t - 1]``
+    unguarded, and numpy resolves ``y_full[-1]`` to the *last* element — so the
+    forecast for the first observation was the final one, a look-ahead leak that
+    would have scored as a perfect prediction of a future the model cannot see.
+
+    NaN is not a new policy; it is the one the windowed branch already applies
+    when ``t - L < 0``. The same condition now gets the same answer.
     """
     out = run_eval(y, [NaiveModel()], [0])
-    assert out["naive"][1][0] == y[-1] == 9.0
+    assert np.isnan(out["naive"][1][0]), "t=0 must not reach back to y_full[-1]"
+
+    # Every later step is unaffected.
+    later = run_eval(y, [NaiveModel()], [1, 5, 9])
+    np.testing.assert_array_equal(later["naive"][1], [0.0, 4.0, 8.0])
 
 
 # ---------------------------------------------------------------------------
