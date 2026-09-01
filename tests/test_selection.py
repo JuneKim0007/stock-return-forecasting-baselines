@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -96,6 +96,33 @@ def universe() -> List[str]:
 # ---------------------------------------------------------------------------
 
 
+def _select(
+    db_conn,
+    universe,
+    spec,
+    prices,
+    *,
+    tier: str = "tier1",
+    loader=None,
+    **kwargs,
+):
+    """Call ``select_tickers_for_tier`` with the injected seams wired up.
+
+    Every test here selects from the same universe against the same connection
+    and differs only in the prices it offers, the loader, and one or two knobs.
+    ``prices`` is the ``{symbol: price}`` map both default seams answer from.
+    """
+    return select_tickers_for_tier(
+        tier,
+        spec,
+        universe,
+        db_conn,
+        history_loader=loader if loader is not None else _accepting_loader(prices),
+        current_price_fn=_accepting_current_price(prices),
+        **kwargs,
+    )
+
+
 def test_seeded_selection_is_reproducible(
     db_conn: sqlite3.Connection,
     universe: List[str],
@@ -108,14 +135,9 @@ def test_seeded_selection_is_reproducible(
     """
     in_band_px = {sym: 8.0 for sym in universe}
 
-    first = select_tickers_for_tier(
-        "tier1",
-        tier1_spec,
-        universe,
-        db_conn,
+    first = _select(
+        db_conn, universe, tier1_spec, in_band_px,
         seed=42,
-        history_loader=_accepting_loader(in_band_px),
-        current_price_fn=_accepting_current_price(in_band_px),
     )
     # Wipe any cached writes so the second run has to re-traverse the loader
     # path the same way the first did. (The loader is deterministic, so this
@@ -124,27 +146,17 @@ def test_seeded_selection_is_reproducible(
     db_conn.execute("DELETE FROM ticker_meta;")
     db_conn.commit()
 
-    second = select_tickers_for_tier(
-        "tier1",
-        tier1_spec,
-        universe,
-        db_conn,
+    second = _select(
+        db_conn, universe, tier1_spec, in_band_px,
         seed=42,
-        history_loader=_accepting_loader(in_band_px),
-        current_price_fn=_accepting_current_price(in_band_px),
     )
 
     assert first == second
     assert len(first) == tier1_spec.target_count
     # And a different seed gives at least *some* different ordering.
-    third = select_tickers_for_tier(
-        "tier1",
-        tier1_spec,
-        universe,
-        db_conn,
+    third = _select(
+        db_conn, universe, tier1_spec, in_band_px,
         seed=999,
-        history_loader=_accepting_loader(in_band_px),
-        current_price_fn=_accepting_current_price(in_band_px),
     )
     assert isinstance(third, list)
     assert len(third) == tier1_spec.target_count
@@ -164,15 +176,11 @@ def test_pre_filter_rejects_out_of_band_current_price(
         loader_calls.append(symbol)
         return _make_series(8.0, n=10)
 
-    result = select_tickers_for_tier(
-        "tier1",
-        tier1_spec,
-        universe,
-        db_conn,
+    result = _select(
+        db_conn, universe, tier1_spec, far_above,
+        loader=loader,
         seed=0,
         max_attempts=50,
-        history_loader=loader,
-        current_price_fn=_accepting_current_price(far_above),
     )
     assert isinstance(result, list)
     assert len(result) < tier1_spec.target_count
@@ -196,15 +204,11 @@ def test_mean_band_rejects_out_of_band_mean(
     def loader(symbol: str, start: str, end: str) -> Optional[pd.Series]:
         return _make_series(out_of_band_mean, n=50)
 
-    result = select_tickers_for_tier(
-        "tier1",
-        tier1_spec,
-        universe,
-        db_conn,
+    result = _select(
+        db_conn, universe, tier1_spec, in_band_px,
+        loader=loader,
         seed=0,
         max_attempts=30,
-        history_loader=loader,
-        current_price_fn=_accepting_current_price(in_band_px),
     )
     assert isinstance(result, list)
     assert len(result) < tier1_spec.target_count
@@ -225,15 +229,11 @@ def test_outlier_rejection_low(
         values[5] = 0.10  # below_threshold violator
         return pd.Series(values, index=idx, name="adj_close")
 
-    result = select_tickers_for_tier(
-        "tier1",
-        tier1_spec,
-        universe,
-        db_conn,
+    result = _select(
+        db_conn, universe, tier1_spec, in_band_px,
+        loader=loader,
         seed=0,
         max_attempts=30,
-        history_loader=loader,
-        current_price_fn=_accepting_current_price(in_band_px),
     )
     assert isinstance(result, list)
     assert len(result) < tier1_spec.target_count
@@ -253,15 +253,11 @@ def test_outlier_rejection_high(
         values[10] = 100.0  # blows past upper_threshold of 30
         return pd.Series(values, index=idx, name="adj_close")
 
-    result = select_tickers_for_tier(
-        "tier1",
-        tier1_spec,
-        universe,
-        db_conn,
+    result = _select(
+        db_conn, universe, tier1_spec, in_band_px,
+        loader=loader,
         seed=0,
         max_attempts=30,
-        history_loader=loader,
-        current_price_fn=_accepting_current_price(in_band_px),
     )
     assert isinstance(result, list)
     assert len(result) < tier1_spec.target_count
@@ -275,14 +271,9 @@ def test_returns_exact_target_count(
     universe = [f"OK{i:02d}" for i in range(15)]  # plenty of room
     in_band_px = {sym: 8.0 for sym in universe}
 
-    result = select_tickers_for_tier(
-        "tier1",
-        tier1_spec,
-        universe,
-        db_conn,
+    result = _select(
+        db_conn, universe, tier1_spec, in_band_px,
         seed=7,
-        history_loader=_accepting_loader(in_band_px),
-        current_price_fn=_accepting_current_price(in_band_px),
     )
     assert len(result) == tier1_spec.target_count
     assert len(set(result)) == len(result)  # no duplicates
@@ -306,15 +297,11 @@ def test_max_attempts_warns_and_returns_partial(
 
     caplog.set_level(logging.WARNING, logger="src.selection")
 
-    result = select_tickers_for_tier(
-        "tier1",
-        tier1_spec,
-        universe,
-        db_conn,
+    result = _select(
+        db_conn, universe, tier1_spec, out_of_band_px,
+        loader=loader,
         seed=0,
         max_attempts=8,
-        history_loader=loader,
-        current_price_fn=_accepting_current_price(out_of_band_px),
     )
 
     # No exception, returns a list (possibly empty), strictly under target.
@@ -366,14 +353,10 @@ def test_db_cache_hit_avoids_loader(
         loader_calls.append(symbol)
         return _make_series(8.0, n=20)
 
-    result = select_tickers_for_tier(
-        "tier1",
-        tier1_spec,
-        universe,
-        db_conn,
+    result = _select(
+        db_conn, universe, tier1_spec, in_band_px,
+        loader=loader,
         seed=0,
-        history_loader=loader,
-        current_price_fn=_accepting_current_price(in_band_px),
         period_start=period_start,
         period_end=period_end,
     )

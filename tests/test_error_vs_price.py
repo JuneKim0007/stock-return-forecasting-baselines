@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from src.storage.db import get_mean_prices, init_schema, open_db, put_history
+from tests.helpers import mean_predictions, write_prediction_csv
 from src.summary import (
     _best_causal_rmse,
     _loglog_slope,
@@ -166,12 +167,9 @@ def test_plot_error_vs_price_survives_unusable_prices(tmp_path: Path) -> None:
 
 
 def _write_pred(path: Path, sigma: float, n: int = 80, seed: int = 0) -> None:
-    """A series whose realised volatility is ``sigma``, predicted by its mean —
-    so the best model's RMSE is sigma, which is the identity the figure plots."""
-    rng = np.random.default_rng(seed)
-    y = rng.normal(0.0, sigma, n)
-    pd.DataFrame({"idx": np.arange(n), "y_true": y,
-                  "y_pred": np.full(n, y.mean())}).to_csv(path, index=False)
+    """Realised volatility ``sigma``, predicted by the series' own mean — so the
+    best model's RMSE is ``sigma``, which is the identity the figure plots."""
+    write_prediction_csv(path, *mean_predictions(n, sigma=sigma, seed=seed))
 
 
 def test_summarise_overall_writes_the_price_figure(tmp_path: Path) -> None:

@@ -1,7 +1,8 @@
 # Refactor backlog
 
 Surveyed 2026-08-31 · scope `src/` · 20 files
-Baseline: tests 102 green · `src/` 3,874 lines · 7 repeated 4-line blocks
+Baseline: tests 102 green · `src/` 3,874 lines · `tests/` 2,760
+Duplication: 49 repeated 4-line blocks → 24 (src 20→7, tests 29→17)
 Previous: 89 · 90 · 81 · 64 · 46 · 39
 
 R1–R8 closed. Defects 1, 2, 3, 5 and a newly-found Defect 6 fixed 2026-09-01.
@@ -198,8 +199,24 @@ bands as 0–10 / 10–100 / 100+, while `config.TIERS` — what `selection.py`
 actually enforces — uses 0–30 / 30–100 / 100+. A $20 stock was `tier2` by one
 and `tier1` by the other. There is now one definition of where a tier begins.
 
-Result: 20 repeated blocks → 7, `src/` 3,997 → 3,874. Proved behaviour-preserving
-by golden-tree diff, all 74 entries including every figure's byte size.
+Result in `src/`: 20 repeated blocks → 7, 3,997 → 3,874 lines.
+
+**`tests/` was worse than `src/` and mostly my doing** — 29 repeated blocks
+across 83 sites against `src/`'s 20. The prediction-CSV writer existed in three
+files and the AR(1) generator in two; `test_selection.py` repeated the same
+eight-line call block eleven times. `tests/helpers.py` now holds what several
+modules genuinely share — the on-disk prediction schema and the synthetic series
+— while each test keeps the data strategy that is its own. A local `_select`
+helper collapses the selection call sites. Eight unused imports went with it.
+`tests/` 29 blocks → 17.
+
+Both halves show the same thing: **deduplication cuts duplication, not size** —
+the shared helpers cost roughly what the duplicated code did. Size came from
+deleting what nothing called. Worth remembering the next time a line count is
+the goal.
+
+Proved behaviour-preserving by golden-tree diff, all 74 entries including every
+figure's byte size.
 
 ---
 

@@ -7,31 +7,16 @@ process, ARMA's RMSE must be within 5% of Naive's.
 
 from __future__ import annotations
 
-import math
-import os
 
 import numpy as np
-import pandas as pd
-import pytest
 
+from tests.helpers import make_ar1
 from src.models import ARMAModel, NaiveModel
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_ar1(
-    n: int, phi: float = 0.6, sigma: float = 1.0, seed: int = 0
-) -> np.ndarray:
-    """Generate a length-``n`` AR(1) series ``y_t = phi*y_{t-1} + eps_t``."""
-    rng = np.random.default_rng(seed)
-    eps = rng.normal(loc=0.0, scale=sigma, size=n)
-    y = np.zeros(n, dtype=float)
-    for t in range(1, n):
-        y[t] = phi * y[t - 1] + eps[t]
-    return y
 
 
 def _rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -51,7 +36,7 @@ def test_rolling_arma_beats_naive_on_ar1() -> None:
     """
     n = 400
     window = 100
-    y = _make_ar1(n=n, phi=0.6, sigma=1.0, seed=0)
+    y = make_ar1(n=n, phi=0.6, sigma=1.0, seed=0)
 
     arma = ARMAModel()
     naive = NaiveModel()

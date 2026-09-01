@@ -14,6 +14,7 @@ from src.analysis.db import init_analysis_schema, open_analysis_db
 from src.analysis.dotplot import render_dotplot
 from src.analysis.persist import persist_summary
 from src.analysis.runner import analyse_test_run
+from tests.helpers import noisy_predictions, write_prediction_csv
 
 
 # ---------------------------------------------------------------------------
@@ -115,25 +116,14 @@ def test_render_dotplot_writes_png_and_csv(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _write_pred_csv(path: Path, n: int = 60, seed: int = 0) -> None:
-    rng = np.random.default_rng(seed)
-    y_true = rng.normal(0, 0.01, size=n)
-    y_pred = y_true + rng.normal(0, 0.005, size=n)
-    pd.DataFrame({
-        "idx": np.arange(60, 60 + n, dtype=int),
-        "y_true": y_true,
-        "y_pred": y_pred,
-    }).to_csv(path, index=False)
-
-
 def test_analyse_test_run_smoke(tmp_path: Path) -> None:
     test_x = tmp_path / "test_x"
     pred_dir = test_x / "tier1" / "predictions"
     pred_dir.mkdir(parents=True)
     for i, ticker in enumerate(["AAA", "BBB"]):
         for j, model in enumerate(["naive", "expanding"]):
-            _write_pred_csv(pred_dir / f"{ticker}_{model}.csv",
-                            seed=10 * i + j)
+            write_prediction_csv(pred_dir / f"{ticker}_{model}.csv",
+                                 *noisy_predictions(seed=10 * i + j))
 
     db_path = analyse_test_run(test_x)
 

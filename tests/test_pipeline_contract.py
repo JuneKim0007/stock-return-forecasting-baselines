@@ -24,6 +24,7 @@ from src.analysis.runner import analyse_test_run
 from src.evaluate import run_one_ticker_eval
 from src.models import MODEL_ORDER, NaiveModel
 from src.summary import _scan_predictions
+from tests.helpers import noisy_predictions, write_prediction_csv
 
 
 # ---------------------------------------------------------------------------
@@ -32,15 +33,7 @@ from src.summary import _scan_predictions
 
 
 def _write_pred_csv(path: Path, n: int = 60, seed: int = 0) -> None:
-    """Write a prediction CSV with the schema the pipeline emits."""
-    rng = np.random.default_rng(seed)
-    y_true = rng.normal(0, 0.01, size=n)
-    y_pred = y_true + rng.normal(0, 0.005, size=n)
-    pd.DataFrame({
-        "idx": np.arange(n, dtype=int),
-        "y_true": y_true,
-        "y_pred": y_pred,
-    }).to_csv(path, index=False)
+    write_prediction_csv(path, *noisy_predictions(n, seed=seed))
 
 
 # ---------------------------------------------------------------------------
