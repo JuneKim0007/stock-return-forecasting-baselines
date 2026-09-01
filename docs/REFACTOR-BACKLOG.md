@@ -418,9 +418,6 @@ per-pair figure kinds, up from 3.
 cannot be regenerated without a full pipeline run against yfinance. Until then
 the README figures disagree with what the code now produces.
 
-**`assets/img/*.png` still predate the palette fix.** See above — the ten
-committed figures need a live yfinance run to regenerate.
-
 **`metrics.csv` is write-only.** The runner produces it and nothing in the
 pipeline reads it back — `summary` and `analysis` both work from the prediction
 CSVs. That is legitimate for a deliverable, and is noted only so the next
