@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Tuple
 
 import matplotlib
@@ -72,6 +73,8 @@ __all__ = [
     # Figure-writing primitives
     "ensure_dirs",
     "save_fig_and_data",
+    "save_figure",
+    "save_placeholder",
     "figure_dirs",
     # The per-pair figures themselves
     "plot_cumulative_error",
@@ -109,6 +112,32 @@ def save_fig_and_data(fig: plt.Figure, df: pd.DataFrame, basename: str) -> List[
     return [png_path, svg_path, csv_path]
 
 
+def save_figure(fig: plt.Figure, out_path: "os.PathLike[str] | str", *, dpi: int = 150):
+    """Write ``fig`` to ``out_path``, creating the parent directory, and close it.
+
+    Closing matters: a run renders hundreds of figures and matplotlib keeps
+    every unclosed one alive.
+    """
+    out = Path(out_path)
+    os.makedirs(out.parent, exist_ok=True)
+    fig.savefig(out, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return out
+
+
+def save_placeholder(out_path: "os.PathLike[str] | str", *, dpi: int = 150,
+                     message: str = "no data"):
+    """Write a figure-shaped placeholder so a missing input leaves a file.
+
+    Callers render into a fixed tree, so an absent PNG reads as a crash. A
+    placeholder says "nothing to draw" instead.
+    """
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.text(0.5, 0.5, message, ha="center", va="center")
+    ax.set_axis_off()
+    return save_figure(fig, out_path, dpi=dpi)
+
+
 @contextmanager
 def figure_dirs(figures_dir: str, figures_data_dir: str) -> Iterator[None]:
     """Temporarily override the module-level figure output dirs.
@@ -141,6 +170,28 @@ def figure_dirs(figures_dir: str, figures_data_dir: str) -> Iterator[None]:
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
+
+
+def _draw_model_lines(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    models: List[str],
+    *,
+    linewidth: float,
+    alpha: float = 1.0,
+) -> None:
+    """Draw one line per model from a wide frame indexed by ``idx``.
+
+    Every per-pair figure draws the same thing — the model's series in the
+    model's colour and linestyle, labelled with its name — and differs only in
+    weight and opacity.
+    """
+    for model in models:
+        ax.plot(
+            df["idx"], df[model],
+            color=color_for(model), linestyle=linestyle_for(model),
+            linewidth=linewidth, alpha=alpha, label=model,
+        )
 
 
 def _cumulative_error_frame(
@@ -215,15 +266,7 @@ def plot_cumulative_error(
     df = _cumulative_error_frame(model_dict, kind)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    for model in ordered_models(model_dict):
-        ax.plot(
-            df["idx"],
-            df[model],
-            color=color_for(model),
-            linestyle=linestyle_for(model),
-            linewidth=1.6,
-            label=model,
-        )
+    _draw_model_lines(ax, df, ordered_models(model_dict), linewidth=1.6)
     ax.set_title(f"Cumulative {label} Error — {ticker} (window={window})")
     ax.set_xlabel("Step index")
     ax.set_ylabel(f"cumsum({'(y - y_hat)^2' if kind == 'sq_err' else '|y - y_hat|'})")
@@ -250,15 +293,7 @@ def plot_rolling_error(
     df, smooth = _rolling_error_frame(model_dict, kind)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    for model in ordered_models(model_dict):
-        ax.plot(
-            df["idx"],
-            df[model],
-            color=color_for(model),
-            linestyle=linestyle_for(model),
-            linewidth=1.4,
-            label=model,
-        )
+    _draw_model_lines(ax, df, ordered_models(model_dict), linewidth=1.4)
     label = kind.upper()
     ax.set_title(
         f"Rolling {label} (smooth={smooth}) — {ticker} (window={window})"
@@ -279,17 +314,8 @@ def plot_actual_vs_pred(
     df = _actual_vs_pred_frame(model_dict)
 
     fig, ax = plt.subplots(figsize=(11, 6))
-    # Actuals heavier and dashed, drawn last so it sits on top.
-    for model in ordered_models(model_dict):
-        ax.plot(
-            df["idx"],
-            df[model],
-            color=color_for(model),
-            linestyle=linestyle_for(model),
-            linewidth=1.0,
-            alpha=0.85,
-            label=model,
-        )
+    _draw_model_lines(ax, df, ordered_models(model_dict), linewidth=1.0, alpha=0.85)
+    # Actuals heavier and dashed, drawn last so they sit on top.
     ax.plot(
         df["idx"],
         df["y_true"],

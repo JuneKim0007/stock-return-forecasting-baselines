@@ -259,6 +259,18 @@ def select_tickers_for_tier(
     if current_price_fn is None:
         current_price_fn = _default_current_price
 
+    def _report_shortfall(cause: str) -> List[str]:
+        """Log a partial selection and hand back what was found.
+
+        Both exits — the attempt cap and a drained universe — are the same
+        outcome to the caller: fewer tickers than asked for, never an error.
+        """
+        logger.warning(
+            "%s: %d / %d selected — %s",
+            tier_name, len(selected), spec.target_count, cause,
+        )
+        return selected
+
     rng = random.Random(seed)
     selected: List[str] = []
     attempted: set = set()
@@ -266,27 +278,12 @@ def select_tickers_for_tier(
 
     while len(selected) < spec.target_count:
         if attempts >= max_attempts:
-            logger.warning(
-                "%s: %d / %d selected — %s",
-                tier_name,
-                len(selected),
-                spec.target_count,
-                "max_attempts reached",
-            )
-            return selected
+            return _report_shortfall("max_attempts reached")
 
         candidate = _naive_first_look(universe, attempted, rng)
         if candidate is None:
-            # Universe drained before target_count — caller should grow the
-            # universe or relax thresholds. Warn and return what we have.
-            logger.warning(
-                "%s: %d / %d selected — %s",
-                tier_name,
-                len(selected),
-                spec.target_count,
-                "universe exhausted",
-            )
-            return selected
+            # Caller should grow the universe or relax the thresholds.
+            return _report_shortfall("universe exhausted")
         attempted.add(candidate)
         attempts += 1
 

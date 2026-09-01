@@ -17,7 +17,6 @@ Reads the per-(ticker, model) prediction CSVs written by the runner under
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
@@ -29,11 +28,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from src.evaluate import parse_prediction_filename
 from src.metrics import mae as _mae, n_scored as _n_scored, rmse as _rmse
 from src.models import color_for, ordered_models
+from src.plots import save_figure, save_placeholder
 
-
-_PRED_RE = re.compile(r"^(?P<ticker>[A-Za-z0-9]+)_(?P<model>[A-Za-z0-9]+)\.csv$")
 
 #: Score-histogram exclusions: ``naive`` rarely wins, ``ensemble`` is a
 #: meta-model derived from the others, and ``global`` is the future-leaking
@@ -53,16 +52,15 @@ def _scan_predictions(pred_dir: Path) -> Dict[str, Dict[str, pd.DataFrame]]:
     if not pred_dir.is_dir():
         return out
     for path in sorted(pred_dir.iterdir()):
-        m = _PRED_RE.match(path.name)
-        if not m:
+        parsed = parse_prediction_filename(path.name)
+        if parsed is None:
             continue
-        ticker = m.group("ticker")
-        model = m.group("model")
         try:
             df = pd.read_csv(path)
         except Exception:
             continue
         if {"y_true", "y_pred"}.issubset(df.columns):
+            ticker, model = parsed
             out.setdefault(ticker, {})[model] = df
     return out
 
@@ -140,16 +138,8 @@ def _plot_summary_bars(
 
     Two subplots side by side: RMSE on the left, MAE on the right.
     """
-    out_path = Path(out_path)
-    os.makedirs(out_path.parent, exist_ok=True)
-
     if summary.empty:
-        fig, ax = plt.subplots(figsize=(6, 3))
-        ax.text(0.5, 0.5, "no data", ha="center", va="center")
-        ax.set_axis_off()
-        fig.savefig(out_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        return out_path
+        return save_placeholder(out_path)
 
     models = ordered_models(summary["model"].tolist())
     summary = summary.set_index("model").reindex(models).reset_index()
@@ -175,9 +165,7 @@ def _plot_summary_bars(
         ax.grid(True, axis="y", alpha=0.3)
     fig.suptitle(title)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
+    return save_figure(fig, out_path, dpi=150)
 
 
 def _plot_cumulative(
@@ -187,9 +175,6 @@ def _plot_cumulative(
     out_path: Path,
 ) -> Path:
     """Sum of squared errors across tickers, one line per model."""
-    out_path = Path(out_path)
-    os.makedirs(out_path.parent, exist_ok=True)
-
     cum_by_model: Dict[str, np.ndarray] = {}
     for ticker, model_dict in by_ticker.items():
         for model, df in model_dict.items():
@@ -206,12 +191,7 @@ def _plot_cumulative(
             cum_by_model[model][:n] += sq[:n]
 
     if not cum_by_model:
-        fig, ax = plt.subplots(figsize=(6, 3))
-        ax.text(0.5, 0.5, "no data", ha="center", va="center")
-        ax.set_axis_off()
-        fig.savefig(out_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        return out_path
+        return save_placeholder(out_path)
 
     fig, ax = plt.subplots(figsize=(9, 5))
     for model in ordered_models(list(cum_by_model.keys())):
@@ -225,9 +205,7 @@ def _plot_cumulative(
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
+    return save_figure(fig, out_path, dpi=150)
 
 
 # ---------------------------------------------------------------------------
@@ -259,27 +237,22 @@ def _plot_score_histogram(
     out_path: Path,
     title: str = "Score histogram (excluding naive, global, ensemble)",
 ) -> Path:
-    out_path = Path(out_path)
-    os.makedirs(out_path.parent, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(8, 4.5))
     if hist.empty:
-        ax.text(0.5, 0.5, "no data", ha="center", va="center")
-        ax.set_axis_off()
-    else:
-        models = hist["model"].tolist()
-        wins = hist["wins"].to_numpy(dtype=int)
-        x = np.arange(len(models))
-        colors = [color_for(m) for m in models]
-        ax.bar(x, wins, color=colors, edgecolor="black", linewidth=0.4)
-        ax.set_xticks(x)
-        ax.set_xticklabels(models, rotation=20, fontsize=9)
-        ax.set_ylabel("# tickers won")
-        ax.set_title(title)
-        ax.grid(True, axis="y", alpha=0.3)
+        return save_placeholder(out_path)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    models = hist["model"].tolist()
+    x = np.arange(len(models))
+    ax.bar(x, hist["wins"].to_numpy(dtype=int),
+           color=[color_for(m) for m in models],
+           edgecolor="black", linewidth=0.4)
+    ax.set_xticks(x)
+    ax.set_xticklabels(models, rotation=20, fontsize=9)
+    ax.set_ylabel("# tickers won")
+    ax.set_title(title)
+    ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
+    return save_figure(fig, out_path, dpi=150)
 
 
 # ---------------------------------------------------------------------------
@@ -328,9 +301,6 @@ def _plot_error_vs_price(
     root-mean-squared error the sample standard deviation, so the second panel
     restated the first. The identity is stated in the axis label instead.
     """
-    out_path = Path(out_path)
-    os.makedirs(out_path.parent, exist_ok=True)
-
     fig, ax = plt.subplots(figsize=(8, 5.5))
     best = best.assign(ticker=best["ticker"].astype(str))
     prices = prices.assign(ticker=prices["ticker"].astype(str))
@@ -338,11 +308,8 @@ def _plot_error_vs_price(
     merged = merged[np.isfinite(merged["mean_price"]) & (merged["mean_price"] > 0)]
 
     if merged.empty:
-        ax.text(0.5, 0.5, "no data", ha="center", va="center")
-        ax.set_axis_off()
-        fig.savefig(out_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
-        return out_path
+        return save_placeholder(out_path, dpi=200)
 
     tier_palette = ["#2ca02c", "#ff7f0e", "#1f77b4"]
     for i, tier in enumerate(sorted(merged["tier"].unique())):
@@ -378,9 +345,7 @@ def _plot_error_vs_price(
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(frameon=True)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
+    return save_figure(fig, out_path, dpi=200)
 
 
 # ---------------------------------------------------------------------------

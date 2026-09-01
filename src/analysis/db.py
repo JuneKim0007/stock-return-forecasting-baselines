@@ -14,17 +14,19 @@ under it:
 
 from __future__ import annotations
 
-import os
 import sqlite3
+
+from src.storage.db import open_db
 
 
 def open_analysis_db(path: str) -> sqlite3.Connection:
-    parent = os.path.dirname(os.path.abspath(path))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    """Open (or create) the analysis database.
+
+    Opening is the same operation as for the ticker cache — create the parent
+    directory, connect, enable foreign keys — so it is not restated here. Only
+    the schema differs, and that is :func:`init_analysis_schema`'s job.
+    """
+    return open_db(path)
 
 
 class LegacyAnalysisSchemaError(RuntimeError):

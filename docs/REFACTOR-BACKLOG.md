@@ -1,7 +1,7 @@
 # Refactor backlog
 
 Surveyed 2026-08-31 · scope `src/` · 20 files
-Baseline: tests 103 green · `src/` 3,997 lines
+Baseline: tests 102 green · `src/` 3,874 lines · 7 repeated 4-line blocks
 Previous: 89 · 90 · 81 · 64 · 46 · 39
 
 R1–R8 closed. Defects 1, 2, 3, 5 and a newly-found Defect 6 fixed 2026-09-01.
@@ -164,6 +164,42 @@ A dtype fragility surfaced during the end-to-end check and not in the unit
 tests, whose tickers were all alphabetic: a numeric-looking symbol is read from
 CSV as `int64` but parsed from a filename as `str`, so the join failed. Both
 sides are now normalised, with a regression test.
+
+### F2 · Deduplication sweep · src/
+closed 2026-09-01 — prompted by the observation that the campaign had grown the
+tree rather than shrunk it. Measured first: a 4-line-block detector found 20
+repeated sequences. Each candidate was tested against "do these two sites change
+for the same reason?" before unifying; all six passed.
+
+* **The prediction filename was stated three times** — an f-string in the writer
+  and a regex in each of two readers — and the two regexes had already drifted
+  (greedy vs non-greedy). `evaluate.prediction_filename` /
+  `parse_prediction_filename` now state it once, next to the code that writes it.
+* **`open_analysis_db` duplicated `open_db`** byte for byte. It delegates now;
+  the schemas stay separate, because those do change for different reasons.
+* **Figure persistence was repeated nine times** across `summary.py` and
+  `analysis/dotplot.py`, with a "no data" placeholder branch four more times.
+  Both are now `plots.save_figure` / `plots.save_placeholder`.
+* **The per-model line loop appeared three times** in `plots.py`; extracted as
+  `_draw_model_lines`, with weight and opacity as the parameters that genuinely
+  varied.
+* **The shortfall warning appeared twice** in `selection.py`; the cause is the
+  parameter.
+
+That reduced duplication but not size — the shared helpers cost what the
+duplication had. The size came from what the sweep exposed next: **`build_dataset`
+has no callers anywhere**, in `src/` or `tests/`, and with it went
+`_write_ticker_csv`, `_adf_pvalue`, `classify_tier` and the `adfuller` import —
+126 lines. An earlier dead-code sweep had missed it because the module docstring
+mentions the name, which the detector counted as a use.
+
+`classify_tier` was worth removing for a second reason: it defined the tier
+bands as 0–10 / 10–100 / 100+, while `config.TIERS` — what `selection.py`
+actually enforces — uses 0–30 / 30–100 / 100+. A $20 stock was `tier2` by one
+and `tier1` by the other. There is now one definition of where a tier begins.
+
+Result: 20 repeated blocks → 7, `src/` 3,997 → 3,874. Proved behaviour-preserving
+by golden-tree diff, all 74 entries including every figure's byte size.
 
 ---
 

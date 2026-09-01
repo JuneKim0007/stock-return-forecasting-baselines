@@ -11,6 +11,7 @@ writes per-model prediction CSVs, and returns one metric row per model.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -28,6 +29,31 @@ from src.rolling import run_eval
 ARMA_FULL_SEARCH_LARGE_WINDOW_SECONDS: float = 1.6   # window >= 90
 ARMA_FULL_SEARCH_SMALL_WINDOW_SECONDS: float = 1.1   # window < 90
 ARMA_CACHED_REFIT_STEP_SECONDS: float = 0.005
+
+#: Prediction files are named ``<TICKER>_<MODEL>.csv``. The model name is the
+#: last underscore-separated field, so the ticker pattern is non-greedy — model
+#: names carry digits (``ma30``, ``arma60``) and a greedy split would swallow
+#: them. Written by :func:`prediction_filename`, read by
+#: :func:`parse_prediction_filename`; both readers of the predictions tree use
+#: the latter so the format is stated once.
+_PREDICTION_FILENAME = re.compile(
+    r"^(?P<ticker>[A-Za-z0-9]+?)_(?P<model>[A-Za-z0-9]+)\.csv$"
+)
+
+
+def prediction_filename(ticker: str, model: str) -> str:
+    """Name of the CSV holding one (ticker, model) pair's predictions."""
+    return f"{ticker}_{model}.csv"
+
+
+def parse_prediction_filename(name: str) -> Optional[Tuple[str, str]]:
+    """Inverse of :func:`prediction_filename`; ``None`` if ``name`` is not one.
+
+    Returning ``None`` rather than raising lets a scanner skip stray files in
+    the predictions directory without a try/except at every call site.
+    """
+    m = _PREDICTION_FILENAME.match(name)
+    return (m.group("ticker"), m.group("model")) if m else None
 
 
 def _estimate_arma_cost(n_steps: int, window: int) -> float:
@@ -110,7 +136,9 @@ def run_one_ticker_eval(
         })
         if predictions_dir is not None:
             os.makedirs(predictions_dir, exist_ok=True)
-            csv_path = os.path.join(predictions_dir, f"{ticker}_{name}.csv")
+            csv_path = os.path.join(
+                predictions_dir, prediction_filename(ticker, name),
+            )
             pd.DataFrame({
                 "idx": test_indices,
                 "y_true": yt.astype(float),
@@ -120,6 +148,8 @@ def run_one_ticker_eval(
 
 
 __all__ = [
+    "prediction_filename",
+    "parse_prediction_filename",
     "ENSEMBLE_NAME",
     "ENSEMBLE_CHILDREN",
     "run_one_ticker_eval",
