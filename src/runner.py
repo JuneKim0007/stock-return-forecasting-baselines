@@ -149,11 +149,7 @@ def _render_per_pair_figures(
     ticker: str,
     per_model: Dict[str, Tuple[np.ndarray, np.ndarray]],
 ) -> None:
-    """Drive every renderer in ``_PER_PAIR_FIGURE_REGISTRY`` for one ticker.
-
-    The new pipeline has no shared window axis, so the registry's ``window``
-    argument is passed as 0 (the renderer uses it only in the filename).
-    """
+    """Drive every renderer in ``_PER_PAIR_FIGURE_REGISTRY`` for one ticker."""
     individual_dir = tier_dir / "individual"
     individual_data_dir = individual_dir / "data"
     os.makedirs(individual_dir, exist_ok=True)
@@ -175,7 +171,7 @@ def _render_per_pair_figures(
     with figure_dirs(str(individual_dir), str(individual_data_dir)):
         for kind, renderer in _PER_PAIR_FIGURE_REGISTRY.items():
             try:
-                renderer(model_dict, ticker, 0)
+                renderer(model_dict, ticker)
             except Exception as exc:  # noqa: BLE001
                 # Non-fatal: a missing figure must not cost us the run's
                 # measurements. But it is logged — a silent swallow here hid

@@ -57,13 +57,6 @@ ROLLING_ERROR_WINDOW: int = 60
 #: Number of trailing steps shown in the actual-vs-predicted plots.
 ACTUAL_VS_PRED_TAIL: int = 200
 
-#: Per-pair renderers still take a ``window`` argument, which they use only for
-#: the figure title and filename. Each model carries its own lookback now, so
-#: there is no shared window to report; both call sites pass this. Removing the
-#: argument would rename every per-pair figure the runner writes, so it is left
-#: as a follow-up rather than folded into a bug fix.
-_NOMINAL_WINDOW: int = 0
-
 __all__ = [
     # Re-exported from src.models so figure code has one import
     "MODEL_ORDER",
@@ -257,7 +250,6 @@ def _actual_vs_pred_frame(model_dict: Dict[str, pd.DataFrame]) -> pd.DataFrame:
 def plot_cumulative_error(
     model_dict: Dict[str, pd.DataFrame],
     ticker: str,
-    window: int,
     *,
     kind: str,
 ) -> List[str]:
@@ -267,7 +259,7 @@ def plot_cumulative_error(
 
     fig, ax = plt.subplots(figsize=(10, 6))
     _draw_model_lines(ax, df, ordered_models(model_dict), linewidth=1.6)
-    ax.set_title(f"Cumulative {label} Error — {ticker} (window={window})")
+    ax.set_title(f"Cumulative {label} Error — {ticker}")
     ax.set_xlabel("Step index")
     ax.set_ylabel(f"cumsum({'(y - y_hat)^2' if kind == 'sq_err' else '|y - y_hat|'})")
     ax.grid(True, alpha=0.3)
@@ -275,9 +267,9 @@ def plot_cumulative_error(
     fig.tight_layout()
 
     base = (
-        f"cumulative_sq_error_{ticker}_{window}"
+        f"cumulative_sq_error_{ticker}"
         if kind == "sq_err"
-        else f"cumulative_abs_error_{ticker}_{window}"
+        else f"cumulative_abs_error_{ticker}"
     )
     return save_fig_and_data(fig, df, base)
 
@@ -285,7 +277,6 @@ def plot_cumulative_error(
 def plot_rolling_error(
     model_dict: Dict[str, pd.DataFrame],
     ticker: str,
-    window: int,
     *,
     kind: str,
 ) -> List[str]:
@@ -296,7 +287,7 @@ def plot_rolling_error(
     _draw_model_lines(ax, df, ordered_models(model_dict), linewidth=1.4)
     label = kind.upper()
     ax.set_title(
-        f"Rolling {label} (smooth={smooth}) — {ticker} (window={window})"
+        f"Rolling {label} (smooth={smooth}) — {ticker}"
     )
     ax.set_xlabel("Step index")
     ax.set_ylabel(f"Rolling {label}")
@@ -304,12 +295,12 @@ def plot_rolling_error(
     ax.legend(title="model", loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False)
     fig.tight_layout()
 
-    base = f"rolling_{kind}_{ticker}_{window}"
+    base = f"rolling_{kind}_{ticker}"
     return save_fig_and_data(fig, df, base)
 
 
 def plot_actual_vs_pred(
-    model_dict: Dict[str, pd.DataFrame], ticker: str, window: int
+    model_dict: Dict[str, pd.DataFrame], ticker: str
 ) -> List[str]:
     df = _actual_vs_pred_frame(model_dict)
 
@@ -326,7 +317,7 @@ def plot_actual_vs_pred(
     )
 
     ax.set_title(
-        f"Actual vs predicted (last {len(df)} steps) — {ticker} (window={window})"
+        f"Actual vs predicted (last {len(df)} steps) — {ticker}"
     )
     ax.set_xlabel("Step index")
     ax.set_ylabel("Log return")
@@ -334,7 +325,7 @@ def plot_actual_vs_pred(
     ax.legend(title="series", loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False)
     fig.tight_layout()
 
-    base = f"actual_vs_pred_{ticker}_{window}"
+    base = f"actual_vs_pred_{ticker}"
     return save_fig_and_data(fig, df, base)
 
 
@@ -349,24 +340,24 @@ def plot_actual_vs_pred(
 
 
 #: Per-(ticker, window) figure renderers, keyed by figure type. Each value is
-#: called as ``renderer(model_dict, ticker, window)`` and returns the paths it
-#: wrote. Renderers needing an extra ``kind`` argument are wrapped in a lambda
-#: so the dispatch loop can call every entry the same way. Insertion-ordered,
-#: so figures always appear in the same sequence.
-PerPairRenderer = Callable[[Dict[str, pd.DataFrame], str, int], List[str]]
+#: called as ``renderer(model_dict, ticker)`` and returns the paths it wrote.
+#: Renderers needing an extra ``kind`` argument are wrapped in a lambda so the
+#: dispatch loop can call every entry the same way. Insertion-ordered, so
+#: figures always appear in the same sequence.
+PerPairRenderer = Callable[[Dict[str, pd.DataFrame], str], List[str]]
 
 _PER_PAIR_FIGURE_REGISTRY: Dict[str, PerPairRenderer] = {
     "cumulative_sq_err": (
-        lambda md, t, w: plot_cumulative_error(md, t, w, kind="sq_err")
+        lambda md, t: plot_cumulative_error(md, t, kind="sq_err")
     ),
     "cumulative_abs_err": (
-        lambda md, t, w: plot_cumulative_error(md, t, w, kind="abs_err")
+        lambda md, t: plot_cumulative_error(md, t, kind="abs_err")
     ),
     "rolling_rmse": (
-        lambda md, t, w: plot_rolling_error(md, t, w, kind="rmse")
+        lambda md, t: plot_rolling_error(md, t, kind="rmse")
     ),
     "rolling_mae": (
-        lambda md, t, w: plot_rolling_error(md, t, w, kind="mae")
+        lambda md, t: plot_rolling_error(md, t, kind="mae")
     ),
     "actual_vs_pred": plot_actual_vs_pred,
 }

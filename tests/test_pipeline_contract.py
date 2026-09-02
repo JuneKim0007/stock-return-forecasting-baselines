@@ -157,7 +157,7 @@ def test_every_registered_per_pair_figure_renders(tmp_path: Path) -> None:
     rendered = {}
     with figure_dirs(str(figs), str(data)):
         for key, renderer in _PER_PAIR_FIGURE_REGISTRY.items():
-            rendered[key] = renderer(model_dict, "AAA", 0)
+            rendered[key] = renderer(model_dict, "AAA")
 
     missing = [k for k, paths in rendered.items() if not paths]
     assert missing == [], f"renderers produced nothing: {missing}"

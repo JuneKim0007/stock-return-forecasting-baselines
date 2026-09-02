@@ -259,6 +259,23 @@ observable, not because anything depended on it.
 
 Totals: 102 → 54 tests, `tests/` 2,760 → 2,272 lines. `src/` untouched.
 
+### F5 · Vestigial `window` argument · plots.py
+closed 2026-09-02 — the last of the retired-window migration debt. The five
+per-pair renderers took a `window` they used only for the figure title and
+filename; both call sites passed 0, so every figure the runner wrote was named
+`rolling_rmse_AAA_0.png` and titled `... (window=0)`. The constant that held the
+0 had already outlived its only consumer, which went with the CLI deletion.
+
+Removed from the three renderers, the registry's type, the two call sites and
+the titles. Files are now `rolling_rmse_AAA.png`.
+
+Behaviour change, confined and checked: golden-tree diff shows the only
+differences are inside `individual/` — the filenames, and PNG byte sizes shifted
+by the shorter title text. CSV contents are identical once names are normalised,
+and nothing outside `individual/` moved. Nothing referenced those names: the one
+test that looks at the directory counts files rather than naming them, and the
+README embeds only cross-tier figures.
+
 ---
 
 ## Dropped
@@ -445,8 +462,3 @@ pipeline reads it back — `summary` and `analysis` both work from the predictio
 CSVs. That is legitimate for a deliverable, and is noted only so the next
 reader does not go looking for the consumer.
 
-**The nominal `window` argument on per-pair renderers.** The five registered
-renderers still take a `window` they use only for the figure title and
-filename, and both call sites pass 0, producing names like
-`rolling_rmse_AAA_0.png`. Cosmetic, not broken, so it was left out of a bug fix
-— removing it renames every per-pair figure the runner writes.
