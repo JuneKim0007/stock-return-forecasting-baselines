@@ -4,9 +4,10 @@ Orchestrates the end-to-end measurement pipeline:
 
 1. Open / init the SQLite cache.
 2. Read the candidate universe (one ticker per line, stripped, uppercased).
-3. For each enabled tier: select tickers via :func:`src.selection.select_tickers_for_tier`
-   (deterministic when ``seed`` is supplied; per-tier seeds are derived from
-   the global seed so different tiers don't sample the same prefix).
+3. For each enabled tier: select tickers via :func:`src.selection.select_tickers_for_tier`.
+   Per-tier seeds are derived from the run seed so different tiers don't sample
+   the same prefix. A seed is drawn if the caller supplies none, and always
+   recorded in ``manifest.json``, so any run can be repeated exactly.
 4. For each (tier, ticker): run the backtest via
    :func:`src.evaluate.run_one_ticker_eval` and persist per-(ticker, model)
    prediction CSVs into the per-tier ``predictions/`` directory, plus per-pair
@@ -28,6 +29,7 @@ import argparse
 import json
 import logging
 import os
+import secrets
 import sys
 import time
 from dataclasses import replace
@@ -456,6 +458,15 @@ def run_test(
     logger = get_logger("runner")
     t_start = time.time()
 
+    # Draw a seed when the caller did not supply one, rather than leaving the
+    # RNG unseeded. Selection is a random draw from the universe either way —
+    # but an unseeded run cannot be repeated, and its manifest recorded only
+    # "seed": null, so there was no way to tell afterwards which tickers a
+    # published result had been computed from.
+    if seed is None:
+        seed = secrets.randbelow(2 ** 31)
+        logger.info("No seed supplied; using %d (recorded in manifest.json)", seed)
+
     conn = open_db(str(Path(db_path)))
     init_schema(conn)
 
@@ -541,7 +552,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--target", type=int, default=None,
                         help="Override per-tier target_count.")
     parser.add_argument("--seed", type=int, default=None,
-                        help="Reproducibility seed for ticker selection.")
+                        help="Seed for ticker selection. Omit to draw one; "
+                             "either way it is recorded in manifest.json so the "
+                             "run can be repeated.")
     parser.add_argument("--refresh-cache", action="store_true",
                         help="Bypass DB cache for this run.")
     parser.add_argument("--tiers", type=str, default=None,

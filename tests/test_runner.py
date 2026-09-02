@@ -217,3 +217,35 @@ def test_cli_main_smoke(tiny_setup, monkeypatch, capsys):
     assert test_root.exists()
     assert (test_root / "tier1" / "predictions").is_dir()
     assert (test_root / "metrics.csv").exists()
+
+
+def test_a_run_without_a_seed_records_one_that_reproduces_it(tiny_setup, monkeypatch):
+    """An unseeded run must still be repeatable afterwards.
+
+    Selection draws from the universe at random, so a run with no seed used to
+    be unrepeatable and its manifest said only ``"seed": null`` — there was no
+    way to tell which tickers a published result came from. A seed is now drawn
+    and recorded, and feeding it back must select the same tickers.
+    """
+    from src import selection as _sel
+    monkeypatch.setattr(
+        _sel, "_default_current_price", _stub_current_price(tiny_setup["tickers"]),
+    )
+    kwargs = dict(
+        tier_specs={"tier1": tiny_setup["spec"]},
+        universe_file=tiny_setup["universe_file"],
+        db_path=tiny_setup["db_path"],
+        out_root=tiny_setup["out_root"],
+        tiers_subset=["tier1"],
+        models_factory=lambda: [NaiveModel()],
+    )
+
+    first = run_test(**kwargs)                       # no seed given
+    recorded = json.loads((first / "manifest.json").read_text())["seed"]
+    assert isinstance(recorded, int), "an unseeded run must still record its seed"
+
+    replay = run_test(**kwargs, seed=recorded)
+    assert (
+        pd.read_csv(replay / "ticker_tested.csv")["ticker"].tolist()
+        == pd.read_csv(first / "ticker_tested.csv")["ticker"].tolist()
+    ), "replaying the recorded seed must select the same tickers"

@@ -1,7 +1,7 @@
 # Refactor backlog
 
 Surveyed 2026-08-31 · scope `src/` · 20 files
-Baseline: tests 54 green · `src/` 3,879 lines · `tests/` 2,272
+Baseline: tests 55 green · `src/` 3,879 lines · `tests/` 2,272
 Duplication: 49 repeated 4-line blocks → 24 (src 20→7, tests 29→17)
 Previous: 89 · 90 · 81 · 64 · 46 · 39
 
@@ -276,6 +276,22 @@ and nothing outside `individual/` moved. Nothing referenced those names: the one
 test that looks at the directory counts files rather than naming them, and the
 README embeds only cross-tier figures.
 
+### F6 · Unseeded runs were unrepeatable · runner.py
+closed 2026-09-02 — found while assessing whether the committed figures could
+just be regenerated. They could not, and this is why.
+
+`run_test` passed `seed=None` straight through to `random.Random(None)`, which
+seeds from OS entropy, and then recorded `"seed": null` in `manifest.json`. So a
+run made without `--seed` drew an arbitrary 90 tickers from the Russell 3000
+universe and kept no record of which draw it was. Every published number in the
+README comes from such a run.
+
+The runner now draws a seed with `secrets.randbelow` when the caller supplies
+none, uses it, logs it, and records it. Selection is still an arbitrary draw —
+that has not changed — but it is now an arbitrary draw that can be repeated.
+
+One test, red-green verified: an unseeded run records an integer seed, and
+feeding that seed back selects the same tickers.
 ---
 
 ## Dropped
@@ -452,10 +468,22 @@ per-pair figure kinds, up from 3.
 
 ## Follow-ups
 
-**Regenerate `assets/img/*.png`.** Ten committed figures, all embedded in
-`README.md`, were rendered before R5 and show six models in the same grey. They
-cannot be regenerated without a full pipeline run against yfinance. Until then
-the README figures disagree with what the code now produces.
+**The published run cannot be reproduced, so the figures cannot simply be
+regenerated.** The ten committed figures predate R5 and show six models in the
+same grey, so they disagree with what the code now produces — but regenerating
+them would make the README *worse*, not better.
+
+`RUN_SEED` was `None` and `--seed` defaults to `None`, so selection drew a
+different 90 tickers on every run and the original run's seed was never
+recorded. The numbers in §4 — mean RMSE ≈ 0.0237, "`expanding` wins 81 of 90",
+the √2 ratio of 1.414 — describe one specific sample that no longer exists. New
+figures would show a different sample sitting beside those numbers.
+
+Future runs are now reproducible (see F6), so this resolves itself the next time
+the pipeline is run in full: regenerate the figures **and** update §4's numbers
+from the same run, together. Doing either alone leaves the README inconsistent.
+That is a decision about published results, so it is left here rather than
+taken.
 
 **`metrics.csv` is write-only.** The runner produces it and nothing in the
 pipeline reads it back — `summary` and `analysis` both work from the prediction
